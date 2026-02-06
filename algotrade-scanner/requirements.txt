@@ -1,0 +1,45 @@
+# AlgoTrade Scanner - Python Dependencies
+
+# Web Framework & Async
+aiohttp>=3.9.0
+requests>=2.31.0
+
+# Scheduling
+APScheduler>=3.10.0
+
+# Database
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0
+alembic>=1.13.0
+asyncpg>=0.29.0
+
+# Redis
+redis>=5.0.0
+
+# Data Processing
+pandas>=2.1.0
+numpy>=1.26.0
+
+# Technical Analysis
+pandas-ta>=0.3.14b0
+
+# Stock Data
+yfinance>=0.2.30
+
+# Telegram Bot
+python-telegram-bot>=20.0
+
+# Configuration
+PyYAML>=6.0
+python-dotenv>=1.0.0
+
+# Monitoring
+prometheus-client>=0.19.0
+sentry-sdk>=1.39.0
+
+# Template Engine
+Jinja2>=3.1.0
+
+# Utilities
+python-dateutil>=2.8.0
+pytz>=2023.3

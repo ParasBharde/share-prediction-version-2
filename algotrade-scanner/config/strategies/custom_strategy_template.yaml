@@ -1,0 +1,82 @@
+# Custom Strategy Template
+# Purpose: Template for creating new trading strategies
+# Instructions: Copy this file, rename, and customize
+# Author: [Your Name]
+# Last Modified: [Date]
+
+strategy:
+  name: "Custom Strategy Name"
+  version: "1.0"
+  enabled: false  # Set to true when ready
+  priority: 10  # Lower priority than built-in strategies
+  description: "Describe what this strategy does"
+
+# Pre-filters (applied before technical analysis)
+# All filters are optional - remove any you don't need
+filters:
+  market_cap_min: null  # Crores
+  market_cap_max: null
+  avg_volume_min: null  # shares per day
+  avg_turnover_min: null  # Crores per day
+  price_min: null
+  price_max: null
+  delivery_percent_min: null
+  promoter_holding_min: null
+  promoter_holding_max: null
+  debt_equity_max: null
+
+# Technical indicators
+# Available types: price_comparison, volume_analysis, oscillator,
+#                  trend, volatility, comparative
+# Each indicator needs: name, type, params (with condition), weight
+# Weights should sum to 1.0
+indicators:
+  - name: "Indicator 1"
+    type: "oscillator"
+    params:
+      period: 14
+      condition: "rsi_14 <= 30"
+    weight: 0.50
+
+  - name: "Indicator 2"
+    type: "trend"
+    params:
+      condition: "ema_20 > ema_50"
+    weight: 0.50
+
+# Signal generation rules
+signal_generation:
+  min_conditions_met: 2  # How many indicators must pass
+  confidence_threshold: 0.60  # Minimum weighted confidence
+  signal_type: "BUY"  # BUY or SELL
+
+# Risk management
+risk_management:
+  stop_loss:
+    type: "percentage"  # Options: percentage, atr_based, support_level
+    percent: 5
+    max_percent: 10
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+  max_sector_allocation: 30
+
+# Backtesting parameters
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2025-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.50
+  min_sharpe_ratio: 1.0
+  max_drawdown: 20
+
+# Alert configuration
+alerts:
+  enabled: true
+  priority: "MEDIUM"  # HIGH, MEDIUM, LOW

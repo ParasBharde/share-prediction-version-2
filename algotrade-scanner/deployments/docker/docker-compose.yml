@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # Main application
+  app:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    container_name: algotrade-scanner
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - DATABASE_URL=postgresql://algotrade:algotrade@timescaledb:5432/algotrade
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONPATH=/app
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../logs:/app/logs
+      - ../../config:/app/config
+    ports:
+      - "9090:9090"
+    networks:
+      - algotrade-net
+
+  # TimescaleDB (PostgreSQL with time-series extension)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: algotrade-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: algotrade
+      POSTGRES_USER: algotrade
+      POSTGRES_PASSWORD: algotrade
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U algotrade"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - algotrade-net
+
+  # Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: algotrade-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - algotrade-net
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: algotrade-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    networks:
+      - algotrade-net
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: algotrade-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - algotrade-net
+
+volumes:
+  timescaledb-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  algotrade-net:
+    driver: bridge

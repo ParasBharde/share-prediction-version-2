@@ -1,0 +1,58 @@
+# System-wide configuration
+# Purpose: Central configuration for all system parameters
+# Modified by: Admin only
+# Read by: All components
+
+system:
+  name: "AlgoTrade Scanner"
+  version: "1.0.0"
+  environment: "production"  # development, staging, production
+  timezone: "Asia/Kolkata"
+
+scanning:
+  # Stock universe to scan
+  universe: "NIFTY500"  # Options: NIFTY50, NIFTY100, NIFTY500, ALL
+
+  # Scanning schedule (IST)
+  schedule:
+    enabled: true
+    time: "15:35"  # After market close (3:30 PM + 5 min buffer)
+    weekdays: [0, 1, 2, 3, 4]  # Monday=0, Friday=4
+
+  # Parallel processing
+  max_workers: 8  # CPU cores - 1
+  timeout_per_stock: 30  # seconds
+  chunk_size: 50  # stocks per batch
+
+data:
+  # Historical data retention
+  ohlcv_retention_days: 730  # 2 years
+
+  # Cache settings
+  cache_ttl_intraday: 300  # 5 minutes
+  cache_ttl_eod: 86400  # 1 day
+
+  # Data quality thresholds
+  max_price_change_percent: 20  # Flag if price moves >20% in 1 day
+  min_volume_threshold: 1000  # Minimum daily volume
+
+monitoring:
+  prometheus_port: 9090
+  health_check_interval: 30  # seconds
+
+  # Sentry configuration
+  sentry:
+    enabled: true
+    dsn: "${SENTRY_DSN}"  # From environment variable
+    traces_sample_rate: 0.1
+
+database:
+  # Connection pooling
+  pool_size: 20
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 3600  # Recycle connections every hour
+
+  # Health checks
+  health_check_interval: 60  # seconds
+  max_retry_attempts: 3

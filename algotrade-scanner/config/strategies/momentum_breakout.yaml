@@ -1,0 +1,92 @@
+# Momentum Breakout Strategy Configuration
+# Purpose: Identifies stocks breaking out with strong momentum
+# Author: System
+# Last Modified: 2025-02-06
+
+strategy:
+  name: "Momentum Breakout"
+  version: "1.0"
+  enabled: true
+  priority: 1  # Higher = checked first
+  description: "Stocks breaking 52-week high with volume surge"
+
+# Pre-filters (applied before technical analysis)
+filters:
+  market_cap_min: 1000  # Crores
+  market_cap_max: null
+  avg_volume_min: 1000000  # shares per day
+  avg_turnover_min: 1000  # Crores per day
+  price_min: 50
+  price_max: 5000
+  delivery_percent_min: 40
+  promoter_holding_min: 30
+  promoter_holding_max: 75
+  debt_equity_max: 1.0
+
+# Technical indicators (all must pass)
+indicators:
+  - name: "52W High Proximity"
+    type: "price_comparison"
+    params:
+      condition: "close >= high_52w * 0.98"
+    weight: 0.25
+
+  - name: "Volume Surge"
+    type: "volume_analysis"
+    params:
+      condition: "volume >= avg_volume_20d * 2.0"
+    weight: 0.30
+
+  - name: "RSI Range"
+    type: "oscillator"
+    params:
+      period: 14
+      condition: "50 <= rsi_14 <= 70"
+    weight: 0.15
+
+  - name: "EMA Alignment"
+    type: "trend"
+    params:
+      condition: "ema_20 > ema_50 > ema_200"
+    weight: 0.20
+
+  - name: "Relative Strength"
+    type: "comparative"
+    params:
+      benchmark: "NIFTY50"
+      period: 20
+      condition: "stock_return > nifty_return"
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 4  # Out of 5
+  confidence_threshold: 0.70
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "atr_based"
+    multiplier: 1.5
+    max_percent: 5
+  target:
+    type: "risk_reward"
+    ratio: 2.5
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+  max_sector_allocation: 30
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2025-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.55
+  min_sharpe_ratio: 1.5
+  max_drawdown: 15
+
+alerts:
+  enabled: true
+  priority: "HIGH"

@@ -1,0 +1,106 @@
+# Alert Template Configuration
+# Purpose: Jinja2 templates for Telegram alerts
+# Modified by: Admin
+# Read by: alerts.alert_formatter
+
+telegram:
+  # Bot configuration
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: "${TELEGRAM_CHAT_ID}"
+  parse_mode: "Markdown"
+  disable_web_page_preview: true
+
+  # Rate limiting for alerts
+  max_alerts_per_hour: 20
+  max_alerts_per_day: 100
+  cooldown_seconds: 30  # Min time between alerts
+
+templates:
+  buy_signal: |
+    *{{ strategy_name }}*
+
+    Stock: {{ symbol }} ({{ company_name }})
+    Price: {{ currency }}{{ entry_price }} ({{ price_change_pct }}%)
+
+    Entry: {{ currency }}{{ entry_price }}
+    Target: {{ currency }}{{ target_price }} (+{{ target_pct }}%)
+    Stop Loss: {{ currency }}{{ stop_loss }} (-{{ stop_loss_pct }}%)
+
+    Confidence: {{ confidence }}%
+    Volume: {{ volume_surge }}x average
+
+    Indicators:
+    {{ indicators_summary }}
+
+    _{{ timestamp }}_
+
+  sell_signal: |
+    *SELL SIGNAL - {{ strategy_name }}*
+
+    Stock: {{ symbol }} ({{ company_name }})
+    Exit Price: {{ currency }}{{ exit_price }}
+
+    Entry: {{ currency }}{{ entry_price }}
+    P&L: {{ pnl_pct }}% ({{ currency }}{{ pnl_amount }})
+
+    Reason: {{ exit_reason }}
+
+    _{{ timestamp }}_
+
+  daily_summary: |
+    *DAILY SUMMARY - {{ date }}*
+
+    Stocks Scanned: {{ stocks_scanned }}
+    Signals Generated: {{ signals_count }}
+    Alerts Sent: {{ alerts_sent }}
+
+    Active Positions: {{ active_positions }}
+    Total P&L: {{ total_pnl_pct }}%
+
+    Top Signals:
+    {% for signal in top_signals %}
+    {{ loop.index }}. {{ signal.symbol }}: {{ signal.confidence }}% confidence
+    {% endfor %}
+
+    _Scan Duration: {{ scan_duration }}s_
+
+  error_alert: |
+    *SYSTEM ERROR*
+
+    Component: {{ component }}
+    Error: {{ error_message }}
+    Severity: {{ severity }}
+
+    Action Required: {{ action_required }}
+
+    _{{ timestamp }}_
+
+  portfolio_update: |
+    *PORTFOLIO UPDATE*
+
+    Total Value: {{ currency }}{{ total_value }}
+    Cash: {{ currency }}{{ cash_available }}
+    Invested: {{ currency }}{{ invested_amount }}
+
+    Today's P&L: {{ daily_pnl_pct }}%
+    Total Return: {{ total_return_pct }}%
+    Sharpe Ratio: {{ sharpe_ratio }}
+    Max Drawdown: {{ max_drawdown_pct }}%
+
+    Positions:
+    {% for pos in positions %}
+    {{ pos.symbol }}: {{ pos.pnl_pct }}% ({{ pos.quantity }} shares)
+    {% endfor %}
+
+    _{{ timestamp }}_
+
+priority_styles:
+  HIGH:
+    prefix: "!!"
+    suffix: ""
+  MEDIUM:
+    prefix: ""
+    suffix: ""
+  LOW:
+    prefix: ""
+    suffix: ""
