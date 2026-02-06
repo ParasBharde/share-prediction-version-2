@@ -1,0 +1,59 @@
+# Risk Management Configuration
+# Purpose: Portfolio constraints, position sizing, risk limits
+# Modified by: Admin / Risk Manager
+# Read by: engine.risk_filter, paper_trading.portfolio_manager
+
+portfolio:
+  # Capital allocation
+  initial_capital: 1000000  # INR
+  max_portfolio_value: 5000000  # INR
+
+  # Position sizing
+  position_sizing:
+    method: "risk_based"  # Options: fixed, risk_based, kelly
+    risk_per_trade_percent: 1.0  # Risk 1% per trade
+    max_position_percent: 20.0  # Max 20% in single stock
+    min_position_size: 10000  # INR
+
+  # Diversification
+  diversification:
+    max_positions: 10
+    max_per_sector: 2
+    max_sector_allocation_percent: 30.0
+
+  # Correlation constraints
+  correlation:
+    max_pairwise_correlation: 0.7
+    lookback_period: 60  # days
+
+risk_limits:
+  # Portfolio-level limits
+  max_drawdown_percent: 15.0
+  max_daily_loss_percent: 3.0
+  max_weekly_loss_percent: 7.0
+
+  # Trade-level limits
+  stop_loss:
+    default_type: "atr_based"  # Options: percentage, atr_based, support_level
+    atr_multiplier: 1.5
+    max_percent: 5.0
+    trailing_enabled: true
+    trailing_atr_multiplier: 2.0
+
+  # Market condition filters
+  market_conditions:
+    vix_threshold: 25  # Reduce position size if VIX > 25
+    vix_scale_factor: 0.5  # Scale positions by this factor when VIX high
+    nifty_below_200dma: "reduce"  # Options: reduce, pause, normal
+
+order_management:
+  # Slippage assumptions
+  slippage_percent: 0.10
+  commission_percent: 0.03
+
+  # Order types
+  default_order_type: "limit"  # Options: market, limit
+  limit_offset_percent: 0.05  # Place limit 0.05% away from signal price
+
+  # Execution window
+  max_execution_delay: 300  # 5 minutes after signal

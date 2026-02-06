@@ -1,0 +1,33 @@
+[Unit]
+Description=AlgoTrade Scanner - NSE Stock Scanning System
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+User=algotrade
+Group=algotrade
+WorkingDirectory=/opt/algotrade-scanner
+Environment=PYTHONPATH=/opt/algotrade-scanner
+EnvironmentFile=/opt/algotrade-scanner/.env
+
+ExecStart=/opt/algotrade-scanner/venv/bin/python -m src.orchestrator.scheduler
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=algotrade-scanner
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/algotrade-scanner/logs
+
+[Install]
+WantedBy=multi-user.target

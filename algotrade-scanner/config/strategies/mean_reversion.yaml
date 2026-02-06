@@ -1,0 +1,93 @@
+# Mean Reversion Strategy Configuration
+# Purpose: Identifies oversold stocks likely to revert to the mean
+# Author: System
+# Last Modified: 2025-02-06
+
+strategy:
+  name: "Mean Reversion"
+  version: "1.0"
+  enabled: true
+  priority: 2
+  description: "Oversold quality stocks with mean-reversion potential"
+
+filters:
+  market_cap_min: 5000  # Crores (larger caps for mean reversion)
+  market_cap_max: null
+  avg_volume_min: 500000
+  avg_turnover_min: 500
+  price_min: 100
+  price_max: 10000
+  delivery_percent_min: 35
+  promoter_holding_min: 30
+  promoter_holding_max: 75
+  debt_equity_max: 0.5  # Low debt preferred
+
+indicators:
+  - name: "RSI Oversold"
+    type: "oscillator"
+    params:
+      period: 14
+      condition: "rsi_14 <= 30"
+    weight: 0.30
+
+  - name: "Bollinger Band Touch"
+    type: "volatility"
+    params:
+      period: 20
+      std_dev: 2
+      condition: "close <= bb_lower"
+    weight: 0.25
+
+  - name: "Volume Confirmation"
+    type: "volume_analysis"
+    params:
+      condition: "volume >= avg_volume_20d * 1.5"
+    weight: 0.15
+
+  - name: "200 DMA Support"
+    type: "trend"
+    params:
+      condition: "close >= ema_200 * 0.95"
+    weight: 0.20
+
+  - name: "MACD Divergence"
+    type: "oscillator"
+    params:
+      fast: 12
+      slow: 26
+      signal: 9
+      condition: "macd_histogram > prev_macd_histogram"
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 3  # Out of 5
+  confidence_threshold: 0.65
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "percentage"
+    percent: 3
+    max_percent: 5
+  target:
+    type: "mean_target"
+    target_level: "ema_20"  # Target is 20-day EMA
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+  max_sector_allocation: 30
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2025-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.60
+  min_sharpe_ratio: 1.2
+  max_drawdown: 12
+
+alerts:
+  enabled: true
+  priority: "MEDIUM"

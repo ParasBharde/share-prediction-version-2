@@ -1,0 +1,67 @@
+# Data source configurations
+# Purpose: API endpoints, keys, rate limits, fallback order
+# Modified by: Admin when adding new data sources
+# Read by: data_ingestion module
+
+primary:
+  name: "nse_official"
+  type: "nse_api"
+  enabled: true
+  base_url: "https://www.nseindia.com/api"
+
+  # Rate limiting
+  rate_limit:
+    max_per_minute: 40
+    max_per_hour: 2000
+
+  # Retry configuration
+  retry:
+    max_attempts: 3
+    backoff_factor: 2  # 2s, 4s, 8s
+    backoff_max: 16    # Cap at 16 seconds
+
+  # Timeouts
+  timeout:
+    connect: 5
+    read: 10
+
+fallback_1:
+  name: "yahoo_finance"
+  type: "yahoo"
+  enabled: true
+
+  rate_limit:
+    max_per_minute: 100
+    max_per_hour: 2000
+
+  retry:
+    max_attempts: 3
+    backoff_factor: 2
+    backoff_max: 10
+
+fallback_2:
+  name: "alpha_vantage"
+  type: "alpha_vantage"
+  enabled: true
+  api_key: "${ALPHA_VANTAGE_KEY}"  # From .env
+
+  rate_limit:
+    max_per_minute: 5
+    max_per_day: 500
+
+  retry:
+    max_attempts: 2
+    backoff_factor: 3
+    backoff_max: 20
+
+# Fallback behavior
+fallback_strategy:
+  # How long to wait before trying next source
+  escalation_delay: 5  # seconds
+
+  # When to give up entirely
+  max_total_attempts: 3  # Try primary + 2 fallbacks
+
+  # Cache stale data as last resort
+  use_stale_cache: true
+  max_stale_age: 3600  # 1 hour

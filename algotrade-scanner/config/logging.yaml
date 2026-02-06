@@ -1,0 +1,59 @@
+# Logging Configuration
+# Purpose: Centralized logging settings for all components
+# Modified by: Admin / DevOps
+# Read by: src.monitoring.logger
+
+logging:
+  # Global log level
+  level: "INFO"  # DEBUG in development, INFO in production
+
+  # Format
+  format: "json"  # Options: json, text
+
+  # Console output
+  console:
+    enabled: true
+    level: "INFO"
+    colorize: true
+
+  # File output
+  file:
+    enabled: true
+    directory: "logs"
+    rotation: "midnight"  # Rotate daily at midnight
+    retention_days: 7
+    compression: true  # Compress after 1 day
+    max_file_size_mb: 100  # Max file size before forced rotation
+
+  # Component-specific log files
+  components:
+    daily:
+      filename: "daily.log"
+      level: "DEBUG"
+      retention_days: 7
+
+    strategies:
+      filename: "strategies.log"
+      level: "DEBUG"
+      retention_days: 7
+
+    alerts:
+      filename: "alerts.log"
+      level: "INFO"
+      retention_days: 7
+
+    data:
+      filename: "data.log"
+      level: "DEBUG"
+      retention_days: 7
+
+    errors:
+      filename: "errors.log"
+      level: "ERROR"
+      retention_days: 30
+
+  # Structured log fields
+  default_fields:
+    service: "algotrade-scanner"
+    environment: "${ENVIRONMENT}"
+    version: "1.0.0"
