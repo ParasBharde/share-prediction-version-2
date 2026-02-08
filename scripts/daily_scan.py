@@ -211,7 +211,7 @@ async def run_daily_scan(
 
         logger.info(f"Scanning {len(stock_list)} stocks")
 
-        # 6. Fetch data for all stocks
+        # 6. Fetch data and run strategies on all stocks
         all_signals: List[TradingSignal] = []
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365)
@@ -222,13 +222,24 @@ async def run_daily_scan(
 
         import pandas as pd
 
+        # Track scan stats for visibility
+        scan_stats = {
+            "no_data": 0,
+            "insufficient_records": 0,
+            "strategy_scanned": 0,
+            "signals_found": 0,
+        }
+
         for i in range(0, len(stock_list), chunk_size):
             chunk = stock_list[i: i + chunk_size]
+            chunk_num = i // chunk_size + 1
+            chunk_end = min(i + chunk_size, len(stock_list))
             logger.info(
-                f"Processing chunk {i // chunk_size + 1}: "
-                f"stocks {i + 1}-{min(i + chunk_size, len(stock_list))}"
+                f"Processing chunk {chunk_num}: "
+                f"stocks {i + 1}-{chunk_end}"
             )
 
+            chunk_signals = 0
             for symbol in chunk:
                 try:
                     # Fetch data
@@ -237,6 +248,7 @@ async def run_daily_scan(
                     )
 
                     if not data or not data.get("records"):
+                        scan_stats["no_data"] += 1
                         continue
 
                     # Validate data
@@ -245,6 +257,7 @@ async def run_daily_scan(
                     )
 
                     if len(clean_records) < 50:
+                        scan_stats["insufficient_records"] += 1
                         continue
 
                     # Convert to DataFrame
@@ -262,10 +275,23 @@ async def run_daily_scan(
                         "last_price": last_price,
                     }
 
+                    scan_stats["strategy_scanned"] += 1
                     signals = _process_single_stock(
                         symbol, df, company_info, strategies
                     )
 
+                    if signals:
+                        chunk_signals += len(signals)
+                        scan_stats["signals_found"] += len(signals)
+                        for sig in signals:
+                            logger.info(
+                                f"SIGNAL: {sig.strategy_name} -> "
+                                f"{sig.symbol} ({sig.signal_type.value}) "
+                                f"confidence={sig.confidence:.2f} "
+                                f"entry={sig.entry_price:.2f} "
+                                f"target={sig.target_price:.2f} "
+                                f"SL={sig.stop_loss:.2f}"
+                            )
                     all_signals.extend(signals)
                     results["stocks_scanned"] += 1
 
@@ -283,10 +309,40 @@ async def run_daily_scan(
                         exc_info=True,
                     )
             else:
-                # Inner loop completed normally, continue outer loop
+                # Inner loop completed normally
+                logger.info(
+                    f"Chunk {chunk_num} done: "
+                    f"{chunk_signals} signals found"
+                )
                 continue
             # Inner loop was broken (interrupted), break outer too
             break
+
+        # Log scan summary
+        logger.info(
+            f"Scan stats: {scan_stats['strategy_scanned']} stocks "
+            f"analyzed by strategies, "
+            f"{scan_stats['no_data']} had no data, "
+            f"{scan_stats['insufficient_records']} had <50 records, "
+            f"{scan_stats['signals_found']} total signals generated"
+        )
+        for s in strategies:
+            # Log per-strategy stats if available
+            if hasattr(s, "get_scan_stats"):
+                stats = s.get_scan_stats()
+                logger.info(
+                    f"Strategy '{s.name}' stats: "
+                    f"total={stats.get('total', 0)}, "
+                    f"no_pattern={stats.get('no_pattern', 0)}, "
+                    f"low_confidence={stats.get('low_confidence', 0)}, "
+                    f"pre_filter_rejected={stats.get('pre_filter_rejected', 0)}, "
+                    f"signals={stats.get('signals', 0)}"
+                )
+            else:
+                logger.info(
+                    f"Strategy '{s.name}': scanned "
+                    f"{scan_stats['strategy_scanned']} stocks"
+                )
 
         # 7. Aggregate and rank signals
         if all_signals:
