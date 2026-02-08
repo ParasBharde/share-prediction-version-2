@@ -96,47 +96,121 @@ class AlertFormatter:
 
     def format_buy_signal(self, signal: Dict[str, Any]) -> str:
         """
-        Format a buy signal alert message.
+        Format a buy signal alert message with rich detail.
 
         Args:
-            signal: Signal data dictionary.  Expected keys::
-
-                {
-                    "symbol": "RELIANCE",
-                    "strategy_name": "RSI_MACD_Crossover",
-                    "entry_price": 2450.50,
-                    "target_price": 2600.00,
-                    "stop_loss": 2380.00,
-                    "confidence": 85.0,
-                    "indicators_met": 4,
-                    "total_indicators": 5,
-                }
+            signal: Signal data dictionary with all available fields.
 
         Returns:
             Rendered message string.
         """
+        entry = signal.get("entry_price", 0) or 0
+        target = signal.get("target_price", 0) or 0
+        sl = signal.get("stop_loss", 0) or 0
+
+        # Compute percentages
+        target_pct = 0.0
+        sl_pct = 0.0
+        risk_amt = 0.0
+        reward_amt = 0.0
+        rr_ratio = 0.0
+        if entry > 0:
+            target_pct = round((target - entry) / entry * 100, 1)
+            sl_pct = round((entry - sl) / entry * 100, 1)
+            risk_amt = round(entry - sl, 2)
+            reward_amt = round(target - entry, 2)
+            if risk_amt > 0:
+                rr_ratio = round(reward_amt / risk_amt, 1)
+
+        # Build indicator checks section
+        indicators_summary = self._build_indicator_summary(signal)
+
+        # Get strategy name
+        strategy_name = signal.get("strategy_name", "")
+        if not strategy_name:
+            strategies = signal.get("contributing_strategies", [])
+            strategy_name = ", ".join(strategies) if strategies else "N/A"
+
+        sig_type = signal.get("signal_type", "BUY")
+
+        company_name = signal.get("company_name", "")
+        if not company_name or company_name == signal.get("symbol"):
+            company_name = ""
+
+        from src.utils.time_helpers import now_ist
+
         context = {
             "symbol": signal.get("symbol", "UNKNOWN"),
-            "strategy_name": signal.get("strategy_name", "N/A"),
-            "entry_price": self._format_price(
-                signal.get("entry_price")
-            ),
-            "target_price": self._format_price(
-                signal.get("target_price")
-            ),
-            "stop_loss": self._format_price(
-                signal.get("stop_loss")
-            ),
+            "company_name": company_name,
+            "strategy_name": strategy_name,
+            "signal_type": sig_type,
+            "entry_price": self._format_price(entry),
+            "target_price": self._format_price(target),
+            "stop_loss": self._format_price(sl),
+            "target_pct": target_pct,
+            "stop_loss_pct": sl_pct,
+            "risk_amount": self._format_price(risk_amt),
+            "reward_amount": self._format_price(reward_amt),
+            "rr_ratio": rr_ratio,
             "confidence": signal.get("confidence", 0),
             "indicators_met": signal.get("indicators_met", "N/A"),
             "total_indicators": signal.get("total_indicators", "N/A"),
-            "signal_type": SignalType.BUY.value,
-            "currency": CURRENCY_SYMBOL,
-            "timestamp": datetime.now(timezone.utc).strftime(
-                "%Y-%m-%d %H:%M UTC"
+            "indicators_summary": indicators_summary,
+            "contributing_strategies": signal.get(
+                "contributing_strategies", []
             ),
+            "strategy_count": signal.get("strategy_count", 1),
+            "currency": CURRENCY_SYMBOL,
+            "timestamp": now_ist().strftime("%I:%M %p IST | %d %b %Y"),
         }
         return self._render_template("buy_signal", context)
+
+    def _build_indicator_summary(
+        self, signal: Dict[str, Any]
+    ) -> str:
+        """Build formatted indicator checks from signal data."""
+        lines = []
+
+        # Get indicator_details from individual_signals
+        individual = signal.get("individual_signals", [])
+        all_details = {}
+        for ind_sig in individual:
+            details = ind_sig.get("indicator_details", {})
+            for k, v in details.items():
+                # Prefix with strategy name to avoid collision
+                strat = ind_sig.get("strategy_name", "")
+                key = f"{strat}: {k}" if strat and len(individual) > 1 else k
+                all_details[key] = v
+
+        # Also check top-level indicator_details
+        if signal.get("indicator_details"):
+            all_details.update(signal["indicator_details"])
+
+        if not all_details:
+            return "  No indicator details available"
+
+        for name, detail in all_details.items():
+            if not isinstance(detail, dict):
+                continue
+            passed = detail.get("passed", False)
+            icon = "+" if passed else "-"
+            display_name = name.replace("_", " ").title()
+
+            detail_parts = []
+            for k, v in detail.items():
+                if k == "passed":
+                    continue
+                if isinstance(v, float):
+                    detail_parts.append(f"{k}={v:.2f}")
+                elif isinstance(v, bool):
+                    continue
+                else:
+                    detail_parts.append(f"{k}={v}")
+
+            detail_str = ", ".join(detail_parts)
+            lines.append(f"  [{icon}] {display_name}: {detail_str}")
+
+        return "\n".join(lines) if lines else "  No indicators"
 
     def format_sell_signal(self, signal_data: Dict[str, Any]) -> str:
         """

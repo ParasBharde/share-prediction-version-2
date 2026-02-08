@@ -45,17 +45,46 @@ NSE_HISTORICAL = "/historical/cm/equity"
 NSE_INDEX_DATA = "/equity-stockIndices"
 NSE_MARKET_STATUS = "/marketStatus"
 
-# Default headers for NSE
+# Default headers for NSE (must match real browser to avoid WAF blocks)
 NSE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.nseindia.com/",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Ch-Ua": (
+        '"Google Chrome";v="131", "Chromium";v="131", '
+        '"Not_A Brand";v="24"'
+    ),
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+}
+
+# Headers for NSE homepage visit (to get cookies)
+NSE_HOMEPAGE_HEADERS = {
+    "User-Agent": NSE_HEADERS["User-Agent"],
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Ch-Ua": NSE_HEADERS["Sec-Ch-Ua"],
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
 }
 
 # Yahoo Finance suffix for NSE stocks

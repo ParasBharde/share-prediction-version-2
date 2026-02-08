@@ -31,6 +31,7 @@ from src.utils.constants import (
     NSE_API_BASE,
     NSE_BASE_URL,
     NSE_HEADERS,
+    NSE_HOMEPAGE_HEADERS,
 )
 
 logger = get_logger(__name__)
@@ -49,26 +50,45 @@ class NSEFetcher(BaseFetcher):
         self.retry_config = source_config.get("retry", {})
         self.timeout_config = source_config.get("timeout", {})
 
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create HTTP session with cookie jar."""
+        if self._session is None or self._session.closed:
+            jar = aiohttp.CookieJar()
+            timeout = aiohttp.ClientTimeout(
+                total=30, connect=5, sock_read=10
+            )
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                cookie_jar=jar,
+            )
+        return self._session
+
     async def _refresh_session(self) -> bool:
         """
         Refresh NSE session cookies by visiting main page.
-        NSE requires valid cookies from the main site.
+        Uses browser-like homepage headers for the initial visit.
 
         Returns:
             True if session was refreshed successfully.
         """
         try:
             session = await self._get_session()
+
+            # Visit homepage with browser-like headers to get cookies
             async with session.get(
-                NSE_BASE_URL, headers=NSE_HEADERS
+                NSE_BASE_URL,
+                headers=NSE_HOMEPAGE_HEADERS,
+                allow_redirects=True,
             ) as response:
                 if response.status == 200:
-                    self._cookies = {
-                        cookie.key: cookie.value
-                        for cookie in response.cookies.values()
-                    }
+                    self._cookies = {}
+                    for cookie in session.cookie_jar:
+                        self._cookies[cookie.key] = cookie.value
                     self._cookie_expiry = datetime.now()
-                    logger.info("NSE session cookies refreshed")
+                    logger.info(
+                        f"NSE session cookies refreshed: "
+                        f"{list(self._cookies.keys())}"
+                    )
                     return True
                 else:
                     logger.warning(
@@ -90,11 +110,11 @@ class NSEFetcher(BaseFetcher):
         if self._cookies is None:
             await self._refresh_session()
         elif self._cookie_expiry:
-            # Refresh cookies if older than 5 minutes
+            # Refresh cookies if older than 3 minutes
             elapsed = (
                 datetime.now() - self._cookie_expiry
             ).total_seconds()
-            if elapsed > 300:
+            if elapsed > 180:
                 await self._refresh_session()
 
     async def fetch(
@@ -123,18 +143,18 @@ class NSEFetcher(BaseFetcher):
             "to": end_date.strftime("%d-%m-%Y"),
         }
 
+        # Use API headers with Referer pointing to the equity page
         headers = {**NSE_HEADERS}
-        if self._cookies:
-            cookie_str = "; ".join(
-                f"{k}={v}" for k, v in self._cookies.items()
-            )
-            headers["Cookie"] = cookie_str
+        headers["Referer"] = (
+            f"https://www.nseindia.com/get-quotes/"
+            f"equity?symbol={symbol}"
+        )
 
         data = await self._request_with_retry(
             url=url,
             headers=headers,
             params=params,
-            max_retries=self.retry_config.get("max_attempts", 3),
+            max_retries=self.retry_config.get("max_attempts", 1),
             backoff_factor=self.retry_config.get(
                 "backoff_factor", 2
             ),
@@ -145,7 +165,6 @@ class NSEFetcher(BaseFetcher):
             return self._parse_historical_data(data["data"], symbol)
 
         # Try refreshing session and retrying once
-        # Only if session refresh actually succeeds
         if data is None:
             logger.info(
                 f"Retrying {symbol} after session refresh"
@@ -158,12 +177,6 @@ class NSEFetcher(BaseFetcher):
                     f"for {symbol}"
                 )
                 return None
-
-            if self._cookies:
-                cookie_str = "; ".join(
-                    f"{k}={v}" for k, v in self._cookies.items()
-                )
-                headers["Cookie"] = cookie_str
 
             data = await self._request_with_retry(
                 url=url,
@@ -195,11 +208,10 @@ class NSEFetcher(BaseFetcher):
         params = {"symbol": symbol}
 
         headers = {**NSE_HEADERS}
-        if self._cookies:
-            cookie_str = "; ".join(
-                f"{k}={v}" for k, v in self._cookies.items()
-            )
-            headers["Cookie"] = cookie_str
+        headers["Referer"] = (
+            f"https://www.nseindia.com/get-quotes/"
+            f"equity?symbol={symbol}"
+        )
 
         data = await self._request_with_retry(
             url=url,
@@ -245,11 +257,7 @@ class NSEFetcher(BaseFetcher):
         params = {"index": index}
 
         headers = {**NSE_HEADERS}
-        if self._cookies:
-            cookie_str = "; ".join(
-                f"{k}={v}" for k, v in self._cookies.items()
-            )
-            headers["Cookie"] = cookie_str
+        headers["Referer"] = "https://www.nseindia.com/market-data/live-equity-market"
 
         data = await self._request_with_retry(
             url=url,

@@ -375,6 +375,10 @@ async def run_daily_scan(
                     signal_dict["confidence"] = round(
                         signal.weighted_confidence * 100, 1
                     )
+                    # Pass individual_signals for rich indicator details
+                    signal_dict["individual_signals"] = (
+                        signal.individual_signals
+                    )
                     message = alert_formatter.format_buy_signal(
                         signal_dict
                     )
