@@ -49,10 +49,13 @@ class NSEFetcher(BaseFetcher):
         self.retry_config = source_config.get("retry", {})
         self.timeout_config = source_config.get("timeout", {})
 
-    async def _refresh_session(self) -> None:
+    async def _refresh_session(self) -> bool:
         """
         Refresh NSE session cookies by visiting main page.
         NSE requires valid cookies from the main site.
+
+        Returns:
+            True if session was refreshed successfully.
         """
         try:
             session = await self._get_session()
@@ -66,16 +69,21 @@ class NSEFetcher(BaseFetcher):
                     }
                     self._cookie_expiry = datetime.now()
                     logger.info("NSE session cookies refreshed")
+                    return True
                 else:
                     logger.warning(
                         f"NSE session refresh got HTTP "
                         f"{response.status}"
                     )
+                    return False
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
         except Exception as e:
             logger.error(
                 f"Failed to refresh NSE session: {e}",
                 exc_info=True,
             )
+            return False
 
     async def _ensure_session(self) -> None:
         """Ensure we have valid session cookies."""
@@ -137,11 +145,19 @@ class NSEFetcher(BaseFetcher):
             return self._parse_historical_data(data["data"], symbol)
 
         # Try refreshing session and retrying once
+        # Only if session refresh actually succeeds
         if data is None:
             logger.info(
                 f"Retrying {symbol} after session refresh"
             )
-            await self._refresh_session()
+            refreshed = await self._refresh_session()
+
+            if not refreshed:
+                logger.warning(
+                    f"Session refresh failed, skipping retry "
+                    f"for {symbol}"
+                )
+                return None
 
             if self._cookies:
                 cookie_str = "; ".join(

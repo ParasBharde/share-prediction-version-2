@@ -121,6 +121,7 @@ class BaseFetcher(ABC):
             Response JSON or None on failure.
         """
         session = await self._get_session()
+        last_status = None
 
         for attempt in range(max_retries):
             try:
@@ -130,7 +131,7 @@ class BaseFetcher(ABC):
                     if response.status == 200:
                         return await response.json()
                     elif response.status == 429:
-                        # Rate limited
+                        # Rate limited - retry with backoff
                         delay = min(
                             backoff_factor ** (attempt + 1),
                             backoff_max,
@@ -145,7 +146,22 @@ class BaseFetcher(ABC):
                             },
                         )
                         await asyncio.sleep(delay)
+                    elif response.status in (403, 401):
+                        # Auth/forbidden - no point retrying
+                        logger.warning(
+                            f"HTTP {response.status} from "
+                            f"{self.source_name} (auth failure, "
+                            f"not retrying)",
+                            extra={
+                                "source": self.source_name,
+                                "status": response.status,
+                                "url": url,
+                            },
+                        )
+                        last_status = response.status
+                        break
                     else:
+                        last_status = response.status
                         logger.warning(
                             f"HTTP {response.status} from "
                             f"{self.source_name}",
@@ -155,6 +171,10 @@ class BaseFetcher(ABC):
                                 "url": url,
                             },
                         )
+
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                # Never swallow cancellation or interrupt
+                raise
 
             except asyncio.TimeoutError:
                 delay = min(
@@ -188,7 +208,8 @@ class BaseFetcher(ABC):
 
         logger.error(
             f"All {max_retries} attempts failed for "
-            f"{self.source_name}",
+            f"{self.source_name}"
+            + (f" (last status: {last_status})" if last_status else ""),
             extra={"source": self.source_name, "url": url},
         )
         return None
@@ -197,3 +218,5 @@ class BaseFetcher(ABC):
         """Close HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()
+            # Give the underlying SSL transports time to close
+            await asyncio.sleep(0.25)

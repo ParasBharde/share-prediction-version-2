@@ -164,6 +164,16 @@ class FallbackManager:
                     ).inc()
 
                     return data
+                else:
+                    # Source returned None or empty - count as failure
+                    self._record_failure(source_name)
+                    data_fetch_failure_counter.labels(
+                        source=source_name
+                    ).inc()
+
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                # Never swallow cancellation or interrupt
+                raise
 
             except Exception as e:
                 self._record_failure(source_name)
@@ -171,7 +181,6 @@ class FallbackManager:
                 logger.warning(
                     f"Failed to fetch {symbol} from "
                     f"{source_name}: {e}",
-                    exc_info=True,
                     extra={
                         "source": source_name,
                         "symbol": symbol,
@@ -186,13 +195,6 @@ class FallbackManager:
                     from_source=source_name,
                     to_source="next",
                 ).inc()
-
-                # Wait before trying next source
-                delay = (
-                    self.config.get("fallback_strategy", {})
-                    .get("escalation_delay", 5)
-                )
-                await asyncio.sleep(delay)
 
         # All sources failed - try stale cache
         fallback_config = self.config.get(
@@ -257,6 +259,8 @@ class FallbackManager:
         """
         Check if circuit breaker is open for a source.
 
+        Opens after 2 consecutive failures and stays open for 5 minutes.
+
         Args:
             source_name: Data source name.
 
@@ -268,17 +272,17 @@ class FallbackManager:
         if cb.get("failures", 0) == 0:
             return False
 
-        # Open circuit after 5 consecutive failures
-        if cb["failures"] >= 5:
+        # Open circuit after 2 consecutive failures (fast trip)
+        if cb["failures"] >= 2:
             if cb.get("last_failure"):
                 cooldown = timedelta(minutes=5)
                 if datetime.now() - cb["last_failure"] > cooldown:
-                    # Reset circuit
+                    # Reset circuit after cooldown
                     cb["failures"] = 0
                     cb["last_failure"] = None
                     logger.info(
                         f"Circuit breaker reset for "
-                        f"{source_name}"
+                        f"{source_name} after cooldown"
                     )
                     return False
                 return True
@@ -297,7 +301,19 @@ class FallbackManager:
         cb["failures"] = cb.get("failures", 0) + 1
         cb["last_failure"] = datetime.now()
 
+        if cb["failures"] == 2:
+            logger.warning(
+                f"Circuit breaker OPEN for {source_name} "
+                f"after {cb['failures']} failures "
+                f"(will skip for 5 minutes)"
+            )
+
     async def close(self) -> None:
         """Close all fetcher sessions."""
-        for fetcher in self.fetchers.values():
-            await fetcher.close()
+        for name, fetcher in self.fetchers.items():
+            try:
+                await fetcher.close()
+            except Exception as e:
+                logger.debug(
+                    f"Error closing {name} session: {e}"
+                )

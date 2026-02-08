@@ -15,10 +15,11 @@ primary:
     max_per_hour: 2000
 
   # Retry configuration
+  # NSE aggressively blocks automated requests (403), so keep retries low
   retry:
-    max_attempts: 3
-    backoff_factor: 2  # 2s, 4s, 8s
-    backoff_max: 16    # Cap at 16 seconds
+    max_attempts: 1
+    backoff_factor: 2
+    backoff_max: 8
 
   # Timeouts
   timeout:
@@ -57,7 +58,7 @@ fallback_2:
 # Fallback behavior
 fallback_strategy:
   # How long to wait before trying next source
-  escalation_delay: 5  # seconds
+  escalation_delay: 1  # seconds (keep low, circuit breaker handles repeated failures)
 
   # When to give up entirely
   max_total_attempts: 3  # Try primary + 2 fallbacks
