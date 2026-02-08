@@ -128,6 +128,8 @@ async def run_daily_scan(
         "errors": 0,
     }
 
+    fallback_manager = None
+
     try:
         # 1. Load configuration
         config = load_config("system")
@@ -218,6 +220,8 @@ async def run_daily_scan(
             "chunk_size", 50
         )
 
+        import pandas as pd
+
         for i in range(0, len(stock_list), chunk_size):
             chunk = stock_list[i: i + chunk_size]
             logger.info(
@@ -244,8 +248,6 @@ async def run_daily_scan(
                         continue
 
                     # Convert to DataFrame
-                    import pandas as pd
-
                     df = pd.DataFrame(clean_records)
                     if "date" in df.columns:
                         df.set_index("date", inplace=True)
@@ -267,12 +269,24 @@ async def run_daily_scan(
                     all_signals.extend(signals)
                     results["stocks_scanned"] += 1
 
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    logger.info(
+                        "Scan interrupted, returning partial results"
+                    )
+                    results["status"] = "interrupted"
+                    break
+
                 except Exception as e:
                     results["errors"] += 1
                     logger.error(
                         f"Error processing {symbol}: {e}",
                         exc_info=True,
                     )
+            else:
+                # Inner loop completed normally, continue outer loop
+                continue
+            # Inner loop was broken (interrupted), break outer too
+            break
 
         # 7. Aggregate and rank signals
         if all_signals:
@@ -336,7 +350,8 @@ async def run_daily_scan(
         # 9. Send daily summary
         duration = time.time() - start_time
         results["duration_seconds"] = round(duration, 2)
-        results["status"] = "success"
+        if results.get("status") != "interrupted":
+            results["status"] = "success"
 
         try:
             summary_message = alert_formatter.format_daily_summary(
@@ -373,9 +388,6 @@ async def run_daily_scan(
             extra=results,
         )
 
-        # Cleanup
-        await fallback_manager.close()
-
         return results
 
     except Exception as e:
@@ -386,6 +398,14 @@ async def run_daily_scan(
         results["status"] = "error"
         results["error"] = str(e)
         return results
+
+    finally:
+        # Always clean up sessions
+        if fallback_manager:
+            try:
+                await fallback_manager.close()
+            except Exception as e:
+                logger.debug(f"Cleanup error: {e}")
 
 
 async def _get_stock_universe(
