@@ -75,11 +75,11 @@ class OHLCVData(Base):
     __tablename__ = "ohlcv_data"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    date = Column(DateTime, primary_key=True, nullable=False, index=True)
     company_id = Column(
         Integer, ForeignKey("companies.id"), nullable=False
     )
     symbol = Column(String(20), nullable=False, index=True)
-    date = Column(DateTime, nullable=False, index=True)
     open = Column(Float, nullable=False)
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)

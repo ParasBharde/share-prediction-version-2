@@ -3,6 +3,7 @@
 # Web Framework & Async
 aiohttp>=3.9.0
 requests>=2.31.0
+brotli>=1.1.0
 
 # Scheduling
 APScheduler>=3.10.0
@@ -43,3 +44,4 @@ Jinja2>=3.1.0
 # Utilities
 python-dateutil>=2.8.0
 pytz>=2023.3
+
