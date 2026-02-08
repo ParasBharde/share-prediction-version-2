@@ -71,7 +71,7 @@ def rank_signals(
         logger.info("No signals to rank")
         return []
 
-    config = load_config("scanner")
+    config = load_config("system")
     ranking_config = config.get("ranking", {})
 
     max_sector = get_nested(

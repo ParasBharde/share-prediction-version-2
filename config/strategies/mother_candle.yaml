@@ -1,0 +1,96 @@
+# Mother Candle (Inside Bar) Strategy Configuration
+# Purpose: Detects Mother Candle patterns and breakouts
+# Author: System
+# Last Modified: 2026-02-08
+
+strategy:
+  name: "Mother Candle"
+  version: "1.0"
+  enabled: true
+  priority: 2  # Higher = checked first
+  description: >
+    Detects a large Mother Candle followed by 3-6 Baby Candles
+    contained within the Mother's range. Alerts on breakout above
+    Mother's High (BUY) or below Mother's Low (SELL). Stop loss
+    at the opposite end of the Mother Candle.
+  params:
+    min_baby_candles: 3     # Minimum number of inside candles
+    max_baby_candles: 6     # Maximum number of inside candles
+    mother_body_min_percent: 1.0  # Min range of mother as % of price
+    trend_confirmation: true  # Require EMA trend alignment
+
+# Pre-filters (applied before technical analysis)
+filters:
+  market_cap_min: 500   # Crores
+  market_cap_max: null
+  avg_volume_min: 500000  # shares per day
+  price_min: 30
+  price_max: 10000
+
+# Technical indicators
+indicators:
+  - name: "Mother Candle Pattern"
+    type: "price_pattern"
+    params:
+      min_babies: 3
+      max_babies: 6
+    weight: 0.35
+
+  - name: "Volume Confirmation"
+    type: "volume_analysis"
+    params:
+      condition: "volume >= avg_volume_20d * 1.5"
+    weight: 0.20
+
+  - name: "Trend Alignment"
+    type: "trend"
+    params:
+      condition: "ema_20 > ema_50 for BUY, ema_20 < ema_50 for SELL"
+    weight: 0.20
+
+  - name: "RSI Range"
+    type: "oscillator"
+    params:
+      period: 14
+      buy_range: "40-75"
+      sell_range: "25-60"
+    weight: 0.15
+
+  - name: "ADX Trend Strength"
+    type: "trend_strength"
+    params:
+      period: 14
+      min_value: 20
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 3  # Out of 5 (pattern + 2 confirmations)
+  confidence_threshold: 0.50
+  signal_type: "BOTH"  # Can generate BUY or SELL
+
+risk_management:
+  stop_loss:
+    type: "pattern_based"  # Stop loss at opposite end of mother candle
+    max_percent: 8  # Maximum stop loss cap
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+  max_sector_allocation: 30
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2026-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.50
+  min_sharpe_ratio: 1.2
+  max_drawdown: 20
+
+alerts:
+  enabled: true
+  priority: "HIGH"

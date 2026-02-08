@@ -27,6 +27,7 @@ from src.strategies.mean_reversion import MeanReversionStrategy
 from src.strategies.momentum_breakout import (
     MomentumBreakoutStrategy,
 )
+from src.strategies.mother_candle import MotherCandleStrategy
 from src.strategies.volume_surge import VolumeSurgeStrategy
 from src.utils.config_loader import load_strategy_config
 from src.utils.validators import validate_strategy_config
@@ -38,6 +39,7 @@ STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "Momentum Breakout": MomentumBreakoutStrategy,
     "Mean Reversion": MeanReversionStrategy,
     "Volume Surge": VolumeSurgeStrategy,
+    "Mother Candle": MotherCandleStrategy,
 }
 
 # Config directory

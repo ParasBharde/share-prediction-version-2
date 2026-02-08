@@ -108,7 +108,7 @@ def filter_signals(
         Filtered list of AggregatedSignal objects that pass
         all risk checks.
     """
-    config = load_config("scanner")
+    config = load_config("system")
     risk_config = config.get("risk", {})
 
     portfolio = portfolio_state or PortfolioState()

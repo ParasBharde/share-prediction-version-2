@@ -19,6 +19,14 @@ scanning:
     time: "15:35"  # After market close (3:30 PM + 5 min buffer)
     weekdays: [0, 1, 2, 3, 4]  # Monday=0, Friday=4
 
+  # Strategy selection
+  strategies:
+    mode: "all"  # "all" = run every enabled strategy, "selected" = only listed ones
+    selected: []  # Strategy names to run when mode is "selected"
+    # Example:
+    #   mode: "selected"
+    #   selected: ["Momentum Breakout", "Mother Candle"]
+
   # Parallel processing
   max_workers: 8  # CPU cores - 1
   timeout_per_stock: 30  # seconds

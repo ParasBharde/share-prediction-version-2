@@ -8,7 +8,8 @@ Purpose:
 
 Usage:
     python scripts/daily_scan.py
-    # Or called by the scheduler automatically
+    python scripts/daily_scan.py --force  # Skip trading day check
+    FORCE_RUN=true python scripts/daily_scan.py
 
 Dependencies:
     - All src modules
@@ -19,7 +20,9 @@ Logging:
     - Failures at ERROR
 """
 
+import argparse
 import asyncio
+import os
 import sys
 import time
 from datetime import datetime, timedelta
@@ -31,13 +34,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.alerts.alert_deduplicator import AlertDeduplicator
 from src.alerts.alert_formatter import AlertFormatter
-from src.alerts.telegram_bot import TelegramBot
+
+try:
+    from src.alerts.telegram_bot import TelegramBot
+except Exception:
+    TelegramBot = None
 from src.data_ingestion.data_validator import DataValidator
 from src.data_ingestion.fallback_manager import FallbackManager
-from src.engine.ranking_engine import RankingEngine
-from src.engine.risk_filter import RiskFilter
-from src.engine.signal_aggregator import SignalAggregator
-from src.engine.strategy_executor import StrategyExecutor
+from src.engine.ranking_engine import rank_signals
+from src.engine.risk_filter import filter_signals, PortfolioState
+from src.engine.signal_aggregator import aggregate_signals
+from src.engine.strategy_executor import (
+    execute_all,
+    _process_single_stock,
+    ExecutionResult,
+)
 from src.monitoring.logger import get_logger
 from src.monitoring.metrics import (
     job_duration_histogram,
@@ -56,9 +67,34 @@ from src.utils.time_helpers import (
 logger = get_logger(__name__)
 
 
-async def run_daily_scan() -> Dict[str, Any]:
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="AlgoTrade Scanner - Daily Stock Scan"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force run even on non-trading days",
+    )
+    parser.add_argument(
+        "--strategies",
+        nargs="*",
+        help="Run specific strategies (space-separated names)",
+    )
+    return parser.parse_args()
+
+
+async def run_daily_scan(
+    force_run: bool = False,
+    strategy_filter: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
     Execute the full daily stock scanning pipeline.
+
+    Args:
+        force_run: If True, skip trading day check.
+        strategy_filter: Optional list of strategy names to run.
 
     Returns:
         Dictionary with scan results summary.
@@ -71,10 +107,18 @@ async def run_daily_scan() -> Dict[str, Any]:
         extra={"scan_date": str(scan_date.date())},
     )
 
-    # Check if trading day
-    if not is_trading_day(scan_date.date()):
-        logger.info("Not a trading day, skipping scan")
+    # Check if trading day (can be bypassed)
+    force_env = os.environ.get("FORCE_RUN", "").lower() in (
+        "true", "1", "yes",
+    )
+    should_force = force_run or force_env
+
+    if not should_force and not is_trading_day(scan_date.date()):
+        logger.info("Not a trading day, skipping scan (use --force to override)")
         return {"status": "skipped", "reason": "not_trading_day"}
+
+    if should_force and not is_trading_day(scan_date.date()):
+        logger.info("Not a trading day, but running anyway (force mode)")
 
     results = {
         "scan_date": str(scan_date.date()),
@@ -96,20 +140,65 @@ async def run_daily_scan() -> Dict[str, Any]:
             logger.warning("No strategies loaded, aborting scan")
             return {**results, "status": "error", "reason": "no_strategies"}
 
+        # 3. Filter strategies if specified
+        strategies_config = config.get("scanning", {}).get("strategies", {})
+        config_mode = strategies_config.get("mode", "all")
+        config_selected = strategies_config.get("selected", [])
+
+        # CLI filter takes priority, then config
+        if strategy_filter:
+            strategies = [
+                s for s in strategies
+                if s.name in strategy_filter
+            ]
+            logger.info(
+                f"CLI filter: running {len(strategies)} strategies: "
+                f"{[s.name for s in strategies]}"
+            )
+        elif config_mode == "selected" and config_selected:
+            strategies = [
+                s for s in strategies
+                if s.name in config_selected
+            ]
+            logger.info(
+                f"Config filter: running {len(strategies)} strategies: "
+                f"{[s.name for s in strategies]}"
+            )
+
+        if not strategies:
+            logger.warning("No strategies after filtering, aborting scan")
+            return {**results, "status": "error", "reason": "no_strategies_after_filter"}
+
         logger.info(f"Loaded {len(strategies)} strategies")
 
-        # 3. Initialize components
+        # 4. Initialize components
         fallback_manager = FallbackManager()
         data_validator = DataValidator()
-        strategy_executor = StrategyExecutor()
-        signal_aggregator = SignalAggregator()
-        ranking_engine = RankingEngine()
-        risk_filter = RiskFilter()
         alert_formatter = AlertFormatter()
-        deduplicator = AlertDeduplicator()
-        telegram = TelegramBot()
 
-        # 4. Get stock list
+        # Initialize Redis-dependent components (graceful if Redis is down)
+        redis_handler = RedisHandler()
+        deduplicator = AlertDeduplicator(redis_handler)
+
+        # Initialize Telegram bot from environment
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        telegram = None
+        if TelegramBot is not None and bot_token and chat_id:
+            telegram = TelegramBot(bot_token, chat_id)
+        else:
+            if TelegramBot is None:
+                logger.warning(
+                    "python-telegram-bot not installed, "
+                    "alerts will be logged only"
+                )
+            else:
+                logger.warning(
+                    "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set, "
+                    "alerts will be logged only"
+                )
+
+        # 5. Get stock list
         stock_list = await _get_stock_universe(
             fallback_manager, config
         )
@@ -120,7 +209,7 @@ async def run_daily_scan() -> Dict[str, Any]:
 
         logger.info(f"Scanning {len(stock_list)} stocks")
 
-        # 5. Fetch data and run strategies
+        # 6. Fetch data for all stocks
         all_signals: List[TradingSignal] = []
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365)
@@ -161,15 +250,17 @@ async def run_daily_scan() -> Dict[str, Any]:
                     if "date" in df.columns:
                         df.set_index("date", inplace=True)
 
-                    # Run all strategies
+                    # Run all strategies on this stock
+                    last_price = float(df["close"].iloc[-1]) if "close" in df.columns else 0
                     company_info = {
                         "name": symbol,
                         "symbol": symbol,
                         "sector": "Unknown",
                         "market_cap": 0,
+                        "last_price": last_price,
                     }
 
-                    signals = strategy_executor.execute_strategies(
+                    signals = _process_single_stock(
                         symbol, df, company_info, strategies
                     )
 
@@ -183,20 +274,25 @@ async def run_daily_scan() -> Dict[str, Any]:
                         exc_info=True,
                     )
 
-        # 6. Aggregate and rank signals
+        # 7. Aggregate and rank signals
         if all_signals:
-            aggregated = signal_aggregator.aggregate(all_signals)
-            ranked = ranking_engine.rank_signals(aggregated)
-            filtered = risk_filter.filter_signals(ranked)
+            aggregated = aggregate_signals(all_signals)
+            ranked = rank_signals(aggregated)
+            filtered = filter_signals(ranked)
 
             results["signals_generated"] = len(filtered)
 
-            # 7. Send alerts
+            # 8. Send alerts
             for signal in filtered:
                 try:
                     # Check deduplication
+                    signal_strategy = (
+                        signal.contributing_strategies[0]
+                        if signal.contributing_strategies
+                        else "unknown"
+                    )
                     if deduplicator.is_duplicate(
-                        signal.symbol, signal.strategy_name
+                        signal.symbol, signal_strategy
                     ):
                         logger.debug(
                             f"Skipping duplicate alert: "
@@ -204,19 +300,29 @@ async def run_daily_scan() -> Dict[str, Any]:
                         )
                         continue
 
-                    # Format alert
+                    # Format alert - convert AggregatedSignal to dict
+                    signal_dict = signal.to_dict()
+                    signal_dict["confidence"] = round(
+                        signal.weighted_confidence * 100, 1
+                    )
                     message = alert_formatter.format_buy_signal(
-                        signal
+                        signal_dict
                     )
 
-                    # Send via Telegram
-                    sent = await telegram.send_alert(
-                        message, signal.priority.value
-                    )
+                    # Send via Telegram (or log if not configured)
+                    if telegram:
+                        sent = await telegram.send_alert(
+                            message, signal.priority.value
+                        )
+                    else:
+                        logger.info(
+                            f"ALERT (no Telegram): {message}"
+                        )
+                        sent = True
 
                     if sent:
                         deduplicator.mark_sent(
-                            signal.symbol, signal.strategy_name
+                            signal.symbol, signal_strategy
                         )
                         results["alerts_sent"] += 1
 
@@ -227,7 +333,7 @@ async def run_daily_scan() -> Dict[str, Any]:
                         exc_info=True,
                     )
 
-        # 8. Send daily summary
+        # 9. Send daily summary
         duration = time.time() - start_time
         results["duration_seconds"] = round(duration, 2)
         results["status"] = "success"
@@ -253,7 +359,10 @@ async def run_daily_scan() -> Dict[str, Any]:
                     ],
                 }
             )
-            await telegram.send_alert(summary_message, "LOW")
+            if telegram:
+                await telegram.send_alert(summary_message, "LOW")
+            else:
+                logger.info(f"SUMMARY (no Telegram): {summary_message}")
         except Exception as e:
             logger.error(
                 f"Failed to send daily summary: {e}"
@@ -328,4 +437,10 @@ async def _get_stock_universe(
 
 
 if __name__ == "__main__":
-    asyncio.run(run_daily_scan())
+    args = parse_args()
+    asyncio.run(
+        run_daily_scan(
+            force_run=args.force,
+            strategy_filter=args.strategies,
+        )
+    )

@@ -22,13 +22,34 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import (
-    NetworkError,
-    RetryAfter,
-    TelegramError,
-    TimedOut,
-)
+try:
+    from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.error import (
+        NetworkError,
+        RetryAfter,
+        TelegramError,
+        TimedOut,
+    )
+    TELEGRAM_AVAILABLE = True
+except Exception:
+    TELEGRAM_AVAILABLE = False
+    Bot = None
+    InlineKeyboardButton = None
+    InlineKeyboardMarkup = None
+
+    # Define stub exception classes for when telegram is not installed
+    class TelegramError(Exception):
+        pass
+
+    class RetryAfter(TelegramError):
+        def __init__(self, retry_after=0):
+            self.retry_after = retry_after
+
+    class TimedOut(TelegramError):
+        pass
+
+    class NetworkError(TelegramError):
+        pass
 
 from src.monitoring.logger import get_alert_logger
 from src.monitoring.metrics import (
@@ -63,8 +84,16 @@ class TelegramBot:
         """
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self._bot = Bot(token=self.bot_token)
         self._failed_queue: List[Dict[str, Any]] = []
+
+        if TELEGRAM_AVAILABLE and Bot is not None:
+            self._bot = Bot(token=self.bot_token)
+        else:
+            self._bot = None
+            logger.warning(
+                "python-telegram-bot not available, "
+                "alerts will be logged only"
+            )
 
         logger.info(
             "TelegramBot initialized",
@@ -94,8 +123,14 @@ class TelegramBot:
         Returns:
             True if the message was delivered successfully, False otherwise.
         """
+        if self._bot is None:
+            logger.info(
+                f"[DRY RUN] Alert ({priority}): {message[:200]}",
+            )
+            return True
+
         reply_markup = None
-        if inline_buttons:
+        if inline_buttons and TELEGRAM_AVAILABLE:
             reply_markup = self._build_inline_keyboard(inline_buttons)
 
         last_error: Optional[Exception] = None
