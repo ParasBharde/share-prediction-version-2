@@ -185,37 +185,39 @@ class AlertFormatter:
         Format a daily summary alert message.
 
         Args:
-            summary: Daily summary data dictionary.  Expected keys::
-
-                {
-                    "date": "2025-01-15",
-                    "signals_generated": 12,
-                    "alerts_sent": 10,
-                    "portfolio_value": 1050000.0,
-                    "daily_pnl": 2500.0,
-                    "daily_pnl_pct": 0.24,
-                    "active_positions": 5,
-                    "winning_trades": 3,
-                    "losing_trades": 1,
-                }
+            summary: Daily summary data dictionary.  All keys are
+                passed through to the Jinja2 template so callers can
+                include any data the template needs.
 
         Returns:
             Rendered message string.
         """
-        context = {
-            "date": summary.get("date", "N/A"),
-            "signals_generated": summary.get("signals_generated", 0),
-            "alerts_sent": summary.get("alerts_sent", 0),
-            "portfolio_value": self._format_price(
-                summary.get("portfolio_value")
-            ),
-            "daily_pnl": summary.get("daily_pnl", 0),
-            "daily_pnl_pct": summary.get("daily_pnl_pct", 0),
-            "active_positions": summary.get("active_positions", 0),
-            "winning_trades": summary.get("winning_trades", 0),
-            "losing_trades": summary.get("losing_trades", 0),
+        # Start with defaults for backwards-compatible keys
+        context: Dict[str, Any] = {
+            "date": "N/A",
+            "signals_generated": 0,
+            "signals_count": 0,
+            "stocks_scanned": 0,
+            "alerts_sent": 0,
+            "active_positions": 0,
+            "total_pnl_pct": 0,
+            "daily_pnl": 0,
+            "daily_pnl_pct": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "scan_duration": 0,
+            "top_signals": [],
             "currency": CURRENCY_SYMBOL,
         }
+        # Overlay with everything the caller provided
+        context.update(summary)
+
+        # Format portfolio_value if present
+        if "portfolio_value" in summary:
+            context["portfolio_value"] = self._format_price(
+                summary.get("portfolio_value")
+            )
+
         return self._render_template("daily_summary", context)
 
     def format_error_alert(

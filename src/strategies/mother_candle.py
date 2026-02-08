@@ -47,6 +47,22 @@ logger = get_logger(__name__)
 class MotherCandleStrategy(BaseStrategy):
     """Detects Mother Candle (Inside Bar) breakout patterns."""
 
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        # Scan stats for diagnostics
+        self._scan_stats = {
+            "total": 0,
+            "pre_filter_rejected": 0,
+            "insufficient_data": 0,
+            "no_pattern": 0,
+            "low_confidence": 0,
+            "signals": 0,
+        }
+
+    def get_scan_stats(self) -> Dict[str, int]:
+        """Return scan statistics for diagnostics."""
+        return dict(self._scan_stats)
+
     def scan(
         self,
         symbol: str,
@@ -67,15 +83,15 @@ class MotherCandleStrategy(BaseStrategy):
         Returns:
             TradingSignal if breakout detected, None otherwise.
         """
+        self._scan_stats["total"] += 1
+
         # Apply pre-filters
         if not self.apply_pre_filters(company_info):
+            self._scan_stats["pre_filter_rejected"] += 1
             return None
 
         if len(df) < 50:
-            logger.debug(
-                f"{symbol}: Insufficient data "
-                f"({len(df)} < 50 rows)"
-            )
+            self._scan_stats["insufficient_data"] += 1
             return None
 
         # Strategy parameters from config
@@ -100,6 +116,7 @@ class MotherCandleStrategy(BaseStrategy):
         )
 
         if pattern is None:
+            self._scan_stats["no_pattern"] += 1
             return None
 
         mother_idx = pattern["mother_idx"]
@@ -275,8 +292,17 @@ class MotherCandleStrategy(BaseStrategy):
                 extra=signal.to_dict(),
             )
 
+            self._scan_stats["signals"] += 1
             return signal
 
+        # Pattern found but indicators didn't meet threshold
+        self._scan_stats["low_confidence"] += 1
+        logger.info(
+            f"{symbol}: Mother Candle pattern found "
+            f"(babies={baby_count}, {breakout_type}) but "
+            f"only {indicators_met}/{min_conditions} indicators met "
+            f"(score={weighted_score:.2f}/{confidence_threshold})"
+        )
         return None
 
     def _find_mother_candle_pattern(
