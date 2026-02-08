@@ -18,19 +18,25 @@ telegram:
 templates:
   buy_signal: |
     *{{ strategy_name }}*
+    {{ symbol }}{% if company_name %} ({{ company_name }}){% endif %}
 
-    Stock: {{ symbol }} ({{ company_name }})
-    Price: {{ currency }}{{ entry_price }} ({{ price_change_pct }}%)
+    Signal: {{ signal_type }}
+    Price: {{ currency }}{{ entry_price }}
 
-    Entry: {{ currency }}{{ entry_price }}
-    Target: {{ currency }}{{ target_price }} (+{{ target_pct }}%)
-    Stop Loss: {{ currency }}{{ stop_loss }} (-{{ stop_loss_pct }}%)
-
-    Confidence: {{ confidence }}%
-    Volume: {{ volume_surge }}x average
-
-    Indicators:
+    ---- INDICATOR CHECKS ----
     {{ indicators_summary }}
+
+    ---- TRADE SETUP ----
+    Entry: {{ currency }}{{ entry_price }}
+    Stop Loss: {{ currency }}{{ stop_loss }} (-{{ stop_loss_pct }}%)
+    Target: {{ currency }}{{ target_price }} (+{{ target_pct }}%)
+    Risk:Reward = 1:{{ rr_ratio }}
+    Risk: {{ currency }}{{ risk_amount }}
+    Reward: {{ currency }}{{ reward_amount }}
+
+    ---- CONFIDENCE: {{ confidence }}% ----
+    Indicators: {{ indicators_met }}/{{ total_indicators }}
+    {% if strategy_count > 1 %}Strategies: {{ contributing_strategies | join(', ') }}{% endif %}
 
     _{{ timestamp }}_
 

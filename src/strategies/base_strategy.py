@@ -172,21 +172,23 @@ class BaseStrategy(ABC):
         """
         filters = self.filters_config
 
-        # Market cap filter
+        # Market cap filter (skip when value is 0 = data unavailable)
         market_cap = company_info.get("market_cap", 0) or 0
-        if filters.get("market_cap_min"):
-            if market_cap < filters["market_cap_min"]:
-                return False
-        if filters.get("market_cap_max"):
-            if market_cap > filters["market_cap_max"]:
-                return False
+        if market_cap > 0:
+            if filters.get("market_cap_min"):
+                if market_cap < filters["market_cap_min"]:
+                    return False
+            if filters.get("market_cap_max"):
+                if market_cap > filters["market_cap_max"]:
+                    return False
 
-        # Price filter
+        # Price filter (skip when value is 0 = data unavailable)
         price = company_info.get("last_price", 0) or 0
-        if filters.get("price_min") and price < filters["price_min"]:
-            return False
-        if filters.get("price_max") and price > filters["price_max"]:
-            return False
+        if price > 0:
+            if filters.get("price_min") and price < filters["price_min"]:
+                return False
+            if filters.get("price_max") and price > filters["price_max"]:
+                return False
 
         return True
 

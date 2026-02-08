@@ -36,6 +36,21 @@ logger = get_logger(__name__)
 class VolumeSurgeStrategy(BaseStrategy):
     """Identifies institutional volume surge opportunities."""
 
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self._scan_stats = {
+            "total": 0,
+            "pre_filter_rejected": 0,
+            "insufficient_data": 0,
+            "no_pattern": 0,
+            "low_confidence": 0,
+            "signals": 0,
+        }
+
+    def get_scan_stats(self) -> Dict[str, int]:
+        """Return scan statistics for diagnostics."""
+        return dict(self._scan_stats)
+
     def scan(
         self,
         symbol: str,
@@ -53,10 +68,14 @@ class VolumeSurgeStrategy(BaseStrategy):
         Returns:
             TradingSignal if volume surge detected.
         """
+        self._scan_stats["total"] += 1
+
         if not self.apply_pre_filters(company_info):
+            self._scan_stats["pre_filter_rejected"] += 1
             return None
 
         if len(df) < 50:
+            self._scan_stats["insufficient_data"] += 1
             return None
 
         indicators_met = 0
@@ -211,6 +230,16 @@ class VolumeSurgeStrategy(BaseStrategy):
                 extra=signal.to_dict(),
             )
 
+            self._scan_stats["signals"] += 1
             return signal
 
+        if indicators_met > 0:
+            self._scan_stats["low_confidence"] += 1
+            logger.info(
+                f"{symbol}: {self.name} - "
+                f"{indicators_met}/{min_conditions} indicators met "
+                f"(score={weighted_score:.2f}/{confidence_threshold})"
+            )
+        else:
+            self._scan_stats["no_pattern"] += 1
         return None

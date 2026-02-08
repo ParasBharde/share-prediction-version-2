@@ -290,6 +290,10 @@ def _process_single_stock(
         if not strategy.enabled:
             continue
 
+        logger.debug(
+            f"{symbol}: Running strategy '{strategy.name}'..."
+        )
+
         strategy_start = time.time()
         try:
             signal = strategy.scan(symbol, df, company_info)
@@ -308,9 +312,13 @@ def _process_single_stock(
                     strategy_name=strategy.name,
                     signal_type=signal.signal_type.value,
                 ).inc()
-                logger.debug(
-                    f"{symbol}: Signal from {strategy.name} "
-                    f"(confidence={signal.confidence:.2f})",
+                logger.info(
+                    f"{symbol}: SIGNAL from '{strategy.name}' "
+                    f"-> {signal.signal_type.value} "
+                    f"confidence={signal.confidence:.2f} "
+                    f"entry={signal.entry_price:.2f} "
+                    f"target={signal.target_price:.2f} "
+                    f"SL={signal.stop_loss:.2f}",
                     extra={
                         "symbol": symbol,
                         "strategy": strategy.name,
