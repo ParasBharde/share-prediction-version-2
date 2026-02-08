@@ -372,9 +372,27 @@ async def run_daily_scan(
 
                     # Format alert - convert AggregatedSignal to dict
                     signal_dict = signal.to_dict()
+                    # Use RAW confidence from the best individual signal
+                    # (weighted_confidence = raw * strategy_weight, which
+                    # makes single-strategy signals look artificially weak)
+                    raw_conf = 0.0
+                    best_met = "N/A"
+                    best_total = "N/A"
+                    for ind_sig in signal.individual_signals:
+                        ic = ind_sig.get("confidence", 0)
+                        if ic > raw_conf:
+                            raw_conf = ic
+                            best_met = ind_sig.get(
+                                "indicators_met", "N/A"
+                            )
+                            best_total = ind_sig.get(
+                                "total_indicators", "N/A"
+                            )
                     signal_dict["confidence"] = round(
-                        signal.weighted_confidence * 100, 1
+                        raw_conf * 100, 1
                     )
+                    signal_dict["indicators_met"] = best_met
+                    signal_dict["total_indicators"] = best_total
                     # Pass individual_signals for rich indicator details
                     signal_dict["individual_signals"] = (
                         signal.individual_signals

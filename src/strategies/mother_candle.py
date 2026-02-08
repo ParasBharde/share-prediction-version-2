@@ -316,8 +316,9 @@ class MotherCandleStrategy(BaseStrategy):
         Search recent candles for a Mother Candle pattern.
 
         Looks backwards from the latest candle to find a pattern
-        where a large candle is followed by 3-6 smaller candles
-        within its range, with the latest candle breaking out.
+        where a large candle is followed by 3+ smaller candles
+        within its range (with slight tolerance), and the latest
+        candle breaks out.
 
         Args:
             df: OHLCV DataFrame.
@@ -332,13 +333,19 @@ class MotherCandleStrategy(BaseStrategy):
         if len(df) < min_babies + 2:
             return None
 
-        # The latest candle is the potential breakout candle
         latest = df.iloc[-1]
 
-        # Search for mother candle starting from max_babies+1 bars back
-        # to min_babies+1 bars back
-        search_start = min(len(df) - 1, max_babies + 1)
+        # Search wider window: up to max_babies+8 bars back
+        # This finds patterns where the mother formed earlier
+        search_start = min(len(df) - 1, max_babies + 8)
         search_end = min_babies + 1
+
+        # Allow baby candle wicks to poke slightly (0.3% of mother range)
+        # outside the mother's range - handles minor wick noise
+        tolerance_pct = 0.003
+
+        best_pattern = None
+        best_baby_count = 0
 
         for lookback in range(search_start, search_end - 1, -1):
             if lookback >= len(df):
@@ -348,10 +355,7 @@ class MotherCandleStrategy(BaseStrategy):
             mother = df.iloc[mother_idx]
             mother_high = float(mother["high"])
             mother_low = float(mother["low"])
-            mother_open = float(mother["open"])
-            mother_close = float(mother["close"])
 
-            # Mother candle must be significant
             if mother_low <= 0:
                 continue
 
@@ -361,7 +365,11 @@ class MotherCandleStrategy(BaseStrategy):
             if mother_range_pct < mother_body_min_pct:
                 continue
 
-            # Check if subsequent candles are inside the mother
+            # Tolerance zone for baby candle wicks
+            tol = (mother_high - mother_low) * tolerance_pct
+            allowed_high = mother_high + tol
+            allowed_low = mother_low - tol
+
             baby_count = 0
             all_inside = True
 
@@ -370,7 +378,7 @@ class MotherCandleStrategy(BaseStrategy):
                 c_high = float(candle["high"])
                 c_low = float(candle["low"])
 
-                if c_high <= mother_high and c_low >= mother_low:
+                if c_high <= allowed_high and c_low >= allowed_low:
                     baby_count += 1
                 else:
                     all_inside = False
@@ -384,8 +392,6 @@ class MotherCandleStrategy(BaseStrategy):
 
             # Check if latest candle breaks out
             latest_close = float(latest["close"])
-            latest_high = float(latest["high"])
-            latest_low = float(latest["low"])
 
             breakout_type = None
             breakout_price = None
@@ -398,23 +404,34 @@ class MotherCandleStrategy(BaseStrategy):
                 breakout_price = latest_close
 
             if breakout_type is None:
+                # Consolidating but no breakout yet
+                logger.debug(
+                    f"Mother Candle consolidation (no breakout): "
+                    f"babies={baby_count}, "
+                    f"range={mother_low:.2f}-{mother_high:.2f}, "
+                    f"close={latest_close:.2f}"
+                )
                 continue
 
-            logger.debug(
+            # Keep best pattern (most baby candles)
+            if baby_count > best_baby_count:
+                best_baby_count = baby_count
+                best_pattern = {
+                    "mother_idx": mother_idx,
+                    "baby_count": baby_count,
+                    "breakout_type": breakout_type,
+                    "mother_high": mother_high,
+                    "mother_low": mother_low,
+                    "breakout_price": breakout_price,
+                }
+
+        if best_pattern:
+            logger.info(
                 f"Mother Candle pattern found: "
-                f"mother_idx={mother_idx}, "
-                f"babies={baby_count}, "
-                f"breakout={breakout_type}, "
-                f"range={mother_low:.2f}-{mother_high:.2f}"
+                f"babies={best_pattern['baby_count']}, "
+                f"breakout={best_pattern['breakout_type']}, "
+                f"range={best_pattern['mother_low']:.2f}"
+                f"-{best_pattern['mother_high']:.2f}"
             )
 
-            return {
-                "mother_idx": mother_idx,
-                "baby_count": baby_count,
-                "breakout_type": breakout_type,
-                "mother_high": mother_high,
-                "mother_low": mother_low,
-                "breakout_price": breakout_price,
-            }
-
-        return None
+        return best_pattern

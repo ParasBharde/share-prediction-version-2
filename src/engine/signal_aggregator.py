@@ -34,6 +34,7 @@ logger = get_logger(__name__)
 
 # Default weight map for strategy-level weighting
 DEFAULT_STRATEGY_WEIGHTS: Dict[str, float] = {
+    "Mother Candle": 0.40,
     "Momentum Breakout": 0.35,
     "Volume Surge": 0.35,
     "Mean Reversion": 0.30,
