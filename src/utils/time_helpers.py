@@ -15,8 +15,13 @@ Logging:
 
 Fallbacks:
     Uses UTC if IST timezone unavailable.
+
+Configuration:
+    Set SKIP_TRADING_DAY_CHECK=true env var to bypass all
+    trading day / holiday checks (always returns True).
 """
 
+import os
 from datetime import datetime, date, time, timedelta
 from typing import Optional, Tuple
 
@@ -34,24 +39,56 @@ from src.utils.constants import (
 IST = pytz.timezone(DEFAULT_TIMEZONE)
 UTC = pytz.UTC
 
-# NSE holidays for 2025 (update annually)
-NSE_HOLIDAYS_2025 = [
-    date(2025, 1, 26),   # Republic Day
-    date(2025, 2, 26),   # Mahashivratri
-    date(2025, 3, 14),   # Holi
-    date(2025, 3, 31),   # Id-Ul-Fitr
-    date(2025, 4, 10),   # Shri Mahavir Jayanti
-    date(2025, 4, 14),   # Dr. Ambedkar Jayanti
-    date(2025, 4, 18),   # Good Friday
-    date(2025, 5, 1),    # Maharashtra Day
-    date(2025, 8, 15),   # Independence Day
-    date(2025, 8, 16),   # Janmashtami
-    date(2025, 10, 2),   # Gandhi Jayanti
-    date(2025, 10, 21),  # Diwali (Laxmi Pujan)
-    date(2025, 10, 22),  # Diwali Balipratipada
-    date(2025, 11, 5),   # Guru Nanak Jayanti
-    date(2025, 12, 25),  # Christmas
-]
+# NSE holidays by year (add new years as needed)
+NSE_HOLIDAYS = {
+    2025: [
+        date(2025, 1, 26),   # Republic Day
+        date(2025, 2, 26),   # Mahashivratri
+        date(2025, 3, 14),   # Holi
+        date(2025, 3, 31),   # Id-Ul-Fitr
+        date(2025, 4, 10),   # Shri Mahavir Jayanti
+        date(2025, 4, 14),   # Dr. Ambedkar Jayanti
+        date(2025, 4, 18),   # Good Friday
+        date(2025, 5, 1),    # Maharashtra Day
+        date(2025, 8, 15),   # Independence Day
+        date(2025, 8, 16),   # Janmashtami
+        date(2025, 10, 2),   # Gandhi Jayanti
+        date(2025, 10, 21),  # Diwali (Laxmi Pujan)
+        date(2025, 10, 22),  # Diwali Balipratipada
+        date(2025, 11, 5),   # Guru Nanak Jayanti
+        date(2025, 12, 25),  # Christmas
+    ],
+    2026: [
+        date(2026, 1, 26),   # Republic Day
+        date(2026, 2, 17),   # Mahashivratri
+        date(2026, 3, 3),    # Holi
+        date(2026, 3, 20),   # Id-Ul-Fitr
+        date(2026, 4, 2),    # Ram Navami
+        date(2026, 4, 3),    # Good Friday
+        date(2026, 4, 14),   # Dr. Ambedkar Jayanti
+        date(2026, 5, 1),    # Maharashtra Day
+        date(2026, 5, 25),   # Buddha Purnima
+        date(2026, 8, 6),    # Janmashtami
+        date(2026, 8, 15),   # Independence Day
+        date(2026, 10, 2),   # Gandhi Jayanti
+        date(2026, 10, 9),   # Dussehra
+        date(2026, 10, 29),  # Diwali (Laxmi Pujan)
+        date(2026, 11, 25),  # Guru Nanak Jayanti
+        date(2026, 12, 25),  # Christmas
+    ],
+}
+
+# Flatten all holidays into a single set for fast lookup
+ALL_NSE_HOLIDAYS = set()
+for _year_holidays in NSE_HOLIDAYS.values():
+    ALL_NSE_HOLIDAYS.update(_year_holidays)
+
+
+def _skip_trading_day_check() -> bool:
+    """Check if trading day validation should be bypassed."""
+    return os.environ.get(
+        "SKIP_TRADING_DAY_CHECK", ""
+    ).lower() in ("true", "1", "yes")
 
 
 def now_ist() -> datetime:
@@ -127,12 +164,17 @@ def is_market_open(dt: Optional[datetime] = None) -> bool:
     """
     Check if the market is currently open.
 
+    Bypassed if SKIP_TRADING_DAY_CHECK=true.
+
     Args:
         dt: Datetime to check (defaults to now IST).
 
     Returns:
         True if market is open.
     """
+    if _skip_trading_day_check():
+        return True
+
     if dt is None:
         dt = now_ist()
     else:
@@ -143,7 +185,7 @@ def is_market_open(dt: Optional[datetime] = None) -> bool:
         return False
 
     # Check if it's a holiday
-    if dt.date() in NSE_HOLIDAYS_2025:
+    if dt.date() in ALL_NSE_HOLIDAYS:
         return False
 
     # Check market hours
@@ -157,12 +199,17 @@ def is_trading_day(check_date: Optional[date] = None) -> bool:
     """
     Check if a given date is a trading day.
 
+    Bypassed if SKIP_TRADING_DAY_CHECK=true.
+
     Args:
         check_date: Date to check (defaults to today IST).
 
     Returns:
         True if it's a trading day.
     """
+    if _skip_trading_day_check():
+        return True
+
     if check_date is None:
         check_date = now_ist().date()
 
@@ -171,7 +218,7 @@ def is_trading_day(check_date: Optional[date] = None) -> bool:
         return False
 
     # Check holiday
-    if check_date in NSE_HOLIDAYS_2025:
+    if check_date in ALL_NSE_HOLIDAYS:
         return False
 
     return True

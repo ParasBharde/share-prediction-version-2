@@ -106,8 +106,8 @@ def execute_all(
     Returns:
         ExecutionResult with all generated signals and statistics.
     """
-    config = load_config("scanner")
-    engine_config = config.get("engine", {})
+    config = load_config("system")
+    engine_config = config.get("scanning", {})
 
     workers = max_workers or get_nested(
         engine_config, "max_workers", DEFAULT_MAX_WORKERS

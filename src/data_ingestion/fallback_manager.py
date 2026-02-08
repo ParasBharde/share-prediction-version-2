@@ -29,11 +29,24 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from src.data_ingestion.alpha_vantage_fetcher import (
-    AlphaVantageFetcher,
-)
-from src.data_ingestion.nse_fetcher import NSEFetcher
-from src.data_ingestion.yahoo_fetcher import YahooFetcher
+# Lazy imports for data fetchers - they may require optional packages
+try:
+    from src.data_ingestion.nse_fetcher import NSEFetcher
+except Exception:
+    NSEFetcher = None
+
+try:
+    from src.data_ingestion.yahoo_fetcher import YahooFetcher
+except Exception:
+    YahooFetcher = None
+
+try:
+    from src.data_ingestion.alpha_vantage_fetcher import (
+        AlphaVantageFetcher,
+    )
+except Exception:
+    AlphaVantageFetcher = None
+
 from src.monitoring.logger import get_logger
 from src.monitoring.metrics import (
     data_fetch_failure_counter,
@@ -54,14 +67,23 @@ class FallbackManager:
         self.config = load_config("data_sources")
         self.redis = RedisHandler()
 
-        # Initialize fetchers based on config
+        # Initialize fetchers based on config and availability
         self.fetchers = {}
-        if self.config.get("primary", {}).get("enabled", True):
-            self.fetchers["primary"] = NSEFetcher()
-        if self.config.get("fallback_1", {}).get("enabled", True):
-            self.fetchers["fallback_1"] = YahooFetcher()
-        if self.config.get("fallback_2", {}).get("enabled", True):
-            self.fetchers["fallback_2"] = AlphaVantageFetcher()
+        if NSEFetcher and self.config.get("primary", {}).get("enabled", True):
+            try:
+                self.fetchers["primary"] = NSEFetcher()
+            except Exception as e:
+                logger.warning(f"Failed to init NSEFetcher: {e}")
+        if YahooFetcher and self.config.get("fallback_1", {}).get("enabled", True):
+            try:
+                self.fetchers["fallback_1"] = YahooFetcher()
+            except Exception as e:
+                logger.warning(f"Failed to init YahooFetcher: {e}")
+        if AlphaVantageFetcher and self.config.get("fallback_2", {}).get("enabled", True):
+            try:
+                self.fetchers["fallback_2"] = AlphaVantageFetcher()
+            except Exception as e:
+                logger.warning(f"Failed to init AlphaVantageFetcher: {e}")
 
         # Circuit breaker state per source
         self.circuit_breakers: Dict[str, Dict] = {
