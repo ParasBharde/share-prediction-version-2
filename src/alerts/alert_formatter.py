@@ -193,22 +193,26 @@ class AlertFormatter:
             if not isinstance(detail, dict):
                 continue
             passed = detail.get("passed", False)
-            icon = "+" if passed else "-"
+            icon = "PASS" if passed else "FAIL"
+            # Replace underscores with spaces to avoid Telegram Markdown
+            # interpreting _text_ as italic
             display_name = name.replace("_", " ").title()
 
             detail_parts = []
             for k, v in detail.items():
                 if k == "passed":
                     continue
+                # Replace underscores in keys for Telegram compatibility
+                display_key = k.replace("_", " ").title()
                 if isinstance(v, float):
-                    detail_parts.append(f"{k}={v:.2f}")
+                    detail_parts.append(f"{display_key}: {v:.2f}")
                 elif isinstance(v, bool):
                     continue
                 else:
-                    detail_parts.append(f"{k}={v}")
+                    detail_parts.append(f"{display_key}: {v}")
 
             detail_str = ", ".join(detail_parts)
-            lines.append(f"  [{icon}] {display_name}: {detail_str}")
+            lines.append(f"  [{icon}] {display_name} ({detail_str})")
 
         return "\n".join(lines) if lines else "  No indicators"
 
