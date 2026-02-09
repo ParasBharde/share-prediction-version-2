@@ -26,6 +26,7 @@ pandas-ta>=0.3.14b0
 
 # Stock Data
 yfinance>=0.2.30
+nsepython>=2.97
 
 # Telegram Bot
 python-telegram-bot>=20.0
