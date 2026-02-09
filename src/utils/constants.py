@@ -39,6 +39,8 @@ NIFTY500_INDEX = "NIFTY 500"
 # NSE API endpoints
 NSE_BASE_URL = "https://www.nseindia.com"
 NSE_API_BASE = "https://www.nseindia.com/api"
+NSE_ARCHIVE_BASE = "https://archives.nseindia.com"
+NSE_INDEX_ARCHIVE_PATH = "/content/indices"
 NSE_EQUITY_QUOTE = "/quote-equity"
 NSE_TRADE_INFO = "/quote-equity?info=trade-info"
 NSE_HISTORICAL = "/historical/cm/equity"
