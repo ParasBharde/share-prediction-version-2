@@ -16,9 +16,10 @@ Fallbacks:
 """
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiohttp
 
@@ -105,6 +106,9 @@ class BaseFetcher(ABC):
         max_retries: int = 3,
         backoff_factor: float = 2.0,
         backoff_max: float = 16.0,
+        auth_failure_handler: Optional[
+            Callable[[], Awaitable[bool]]
+        ] = None,
     ) -> Optional[Dict]:
         """
         Make HTTP request with retry and backoff.
@@ -129,7 +133,37 @@ class BaseFetcher(ABC):
                     url, headers=headers, params=params
                 ) as response:
                     if response.status == 200:
-                        return await response.json()
+                        try:
+                            return await response.json(
+                                content_type=None
+                            )
+                        except (
+                            aiohttp.ContentTypeError,
+                            json.JSONDecodeError,
+                        ) as exc:
+                            logger.warning(
+                                f"Non-JSON response from "
+                                f"{self.source_name}, retrying",
+                                extra={
+                                    "source": self.source_name,
+                                    "url": url,
+                                    "error": str(exc),
+                                    "attempt": attempt + 1,
+                                },
+                            )
+                            if (
+                                auth_failure_handler
+                                and attempt < max_retries - 1
+                            ):
+                                await auth_failure_handler()
+                                delay = min(
+                                    backoff_factor ** (attempt + 1),
+                                    backoff_max,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            last_status = response.status
+                            break
                     elif response.status == 429:
                         # Rate limited - retry with backoff
                         delay = min(
@@ -147,6 +181,29 @@ class BaseFetcher(ABC):
                         )
                         await asyncio.sleep(delay)
                     elif response.status in (403, 401):
+                        if (
+                            auth_failure_handler
+                            and attempt < max_retries - 1
+                        ):
+                            logger.warning(
+                                f"HTTP {response.status} from "
+                                f"{self.source_name} (attempting "
+                                f"auth refresh)",
+                                extra={
+                                    "source": self.source_name,
+                                    "status": response.status,
+                                    "url": url,
+                                },
+                            )
+                            refreshed = await auth_failure_handler()
+                            if refreshed:
+                                delay = min(
+                                    backoff_factor ** (attempt + 1),
+                                    backoff_max,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+
                         # Auth/forbidden - no point retrying
                         logger.warning(
                             f"HTTP {response.status} from "

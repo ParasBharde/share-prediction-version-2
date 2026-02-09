@@ -20,6 +20,8 @@ Fallbacks:
 """
 
 import asyncio
+import csv
+from io import StringIO
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -29,9 +31,11 @@ from src.data_ingestion.base_fetcher import BaseFetcher
 from src.monitoring.logger import get_logger
 from src.utils.constants import (
     NSE_API_BASE,
+    NSE_ARCHIVE_BASE,
     NSE_BASE_URL,
     NSE_HEADERS,
     NSE_HOMEPAGE_HEADERS,
+    NSE_INDEX_ARCHIVE_PATH,
 )
 
 logger = get_logger(__name__)
@@ -80,22 +84,40 @@ class NSEFetcher(BaseFetcher):
                 headers=NSE_HOMEPAGE_HEADERS,
                 allow_redirects=True,
             ) as response:
-                if response.status == 200:
-                    self._cookies = {}
-                    for cookie in session.cookie_jar:
-                        self._cookies[cookie.key] = cookie.value
-                    self._cookie_expiry = datetime.now()
-                    logger.info(
-                        f"NSE session cookies refreshed: "
-                        f"{list(self._cookies.keys())}"
-                    )
-                    return True
-                else:
+                if response.status != 200:
                     logger.warning(
                         f"NSE session refresh got HTTP "
                         f"{response.status}"
                     )
+                    if response.status in (401, 403):
+                        await self._reset_session()
                     return False
+
+            warm_headers = {**NSE_HOMEPAGE_HEADERS}
+            warm_headers["Referer"] = NSE_BASE_URL
+            async with session.get(
+                f"{NSE_BASE_URL}/option-chain",
+                headers=warm_headers,
+                allow_redirects=True,
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        f"NSE option-chain warmup got HTTP "
+                        f"{response.status}"
+                    )
+                    if response.status in (401, 403):
+                        await self._reset_session()
+                    return False
+
+            self._cookies = {}
+            for cookie in session.cookie_jar:
+                self._cookies[cookie.key] = cookie.value
+            self._cookie_expiry = datetime.now()
+            logger.info(
+                f"NSE session cookies refreshed: "
+                f"{list(self._cookies.keys())}"
+            )
+            return True
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as e:
@@ -104,6 +126,14 @@ class NSEFetcher(BaseFetcher):
                 exc_info=True,
             )
             return False
+
+    async def _reset_session(self) -> None:
+        """Reset session and cookie state."""
+        self._cookies = None
+        self._cookie_expiry = None
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
 
     async def _ensure_session(self) -> None:
         """Ensure we have valid session cookies."""
@@ -159,6 +189,7 @@ class NSEFetcher(BaseFetcher):
                 "backoff_factor", 2
             ),
             backoff_max=self.retry_config.get("backoff_max", 16),
+            auth_failure_handler=self._refresh_session,
         )
 
         if data and "data" in data:
@@ -217,6 +248,7 @@ class NSEFetcher(BaseFetcher):
             url=url,
             headers=headers,
             params=params,
+            auth_failure_handler=self._refresh_session,
         )
 
         if data and "priceInfo" in data:
@@ -263,6 +295,7 @@ class NSEFetcher(BaseFetcher):
             url=url,
             headers=headers,
             params=params,
+            auth_failure_handler=self._refresh_session,
         )
 
         if data and "data" in data:
@@ -272,7 +305,76 @@ class NSEFetcher(BaseFetcher):
                 if "symbol" in stock
             ]
 
+        archive_symbols = await self._fetch_index_archive(
+            index
+        )
+        if archive_symbols:
+            logger.info(
+                f"Fetched {len(archive_symbols)} symbols from "
+                f"NSE archive for {index}"
+            )
+            return archive_symbols
+
         return []
+
+    async def _fetch_index_archive(
+        self, index: str
+    ) -> List[str]:
+        """
+        Fetch index constituents from NSE archive CSVs.
+
+        Args:
+            index: Index name (e.g., 'NIFTY 500').
+
+        Returns:
+            List of stock symbols.
+        """
+        archive_map = {
+            "NIFTY 50": "ind_nifty50list.csv",
+            "NIFTY 100": "ind_nifty100list.csv",
+            "NIFTY 500": "ind_nifty500list.csv",
+        }
+        archive_file = archive_map.get(index)
+        if not archive_file:
+            return []
+
+        url = (
+            f"{NSE_ARCHIVE_BASE}{NSE_INDEX_ARCHIVE_PATH}"
+            f"/{archive_file}"
+        )
+        headers = {
+            **NSE_HEADERS,
+            "Accept": "text/csv",
+            "Referer": NSE_BASE_URL,
+        }
+
+        session = await self._get_session()
+        try:
+            async with session.get(
+                url, headers=headers
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        f"NSE archive fetch got HTTP "
+                        f"{response.status} for {index}"
+                    )
+                    return []
+                body = await response.text()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"NSE archive fetch failed for {index}: {exc}"
+            )
+            return []
+
+        reader = csv.DictReader(StringIO(body))
+        symbols = [
+            row["Symbol"].strip()
+            for row in reader
+            if row.get("Symbol")
+        ]
+        return symbols
 
     def _parse_historical_data(
         self, raw_data: List[Dict], symbol: str
