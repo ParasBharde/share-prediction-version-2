@@ -397,9 +397,14 @@ async def run_daily_scan(
                     signal_dict["individual_signals"] = (
                         signal.individual_signals
                     )
-                    message = alert_formatter.format_buy_signal(
-                        signal_dict
-                    )
+                    if signal_dict.get("signal_type") == "SELL":
+                        message = alert_formatter.format_sell_signal(
+                            signal_dict
+                        )
+                    else:
+                        message = alert_formatter.format_buy_signal(
+                            signal_dict
+                        )
 
                     # Send via Telegram (or log if not configured)
                     if telegram:
@@ -508,6 +513,7 @@ async def _get_stock_universe(
         "NIFTY50": "NIFTY 50",
         "NIFTY100": "NIFTY 100",
         "NIFTY500": "NIFTY 500",
+        "NSEALL": "ALL",
     }
 
     index_name = index_map.get(universe, "NIFTY 500")

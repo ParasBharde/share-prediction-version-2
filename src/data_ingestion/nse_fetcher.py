@@ -27,6 +27,11 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+try:
+    from nsepython import nse_eq_symbols
+except Exception:
+    nse_eq_symbols = None
+
 from src.data_ingestion.base_fetcher import BaseFetcher
 from src.monitoring.logger import get_logger
 from src.utils.constants import (
@@ -283,6 +288,13 @@ class NSEFetcher(BaseFetcher):
         Returns:
             List of stock symbols.
         """
+        # For full NSE universe, prefer nsepython wrapper when available
+        # because it is more stable than scraping index constituents.
+        if index.upper() in {"ALL", "NSE ALL"}:
+            all_symbols = await self._fetch_all_symbols_nsepython()
+            if all_symbols:
+                return all_symbols
+
         await self._ensure_session()
 
         url = f"{NSE_API_BASE}/equity-stockIndices"
@@ -316,6 +328,26 @@ class NSEFetcher(BaseFetcher):
             return archive_symbols
 
         return []
+
+    async def _fetch_all_symbols_nsepython(self) -> List[str]:
+        """Fetch full NSE equity universe using nsepython."""
+        if nse_eq_symbols is None:
+            return []
+
+        try:
+            symbols = await asyncio.to_thread(nse_eq_symbols)
+            if not symbols:
+                return []
+            normalized = [str(s).strip().upper() for s in symbols if s]
+            logger.info(
+                f"Fetched {len(normalized)} symbols from nsepython"
+            )
+            return sorted(set(normalized))
+        except Exception as exc:
+            logger.warning(
+                f"nsepython symbol fetch failed: {exc}"
+            )
+            return []
 
     async def _fetch_index_archive(
         self, index: str
