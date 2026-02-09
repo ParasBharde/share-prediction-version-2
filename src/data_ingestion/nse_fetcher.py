@@ -95,6 +95,8 @@ class NSEFetcher(BaseFetcher):
                         f"NSE session refresh got HTTP "
                         f"{response.status}"
                     )
+                    if response.status in (401, 403):
+                        await self._reset_session()
                     return False
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
@@ -104,6 +106,14 @@ class NSEFetcher(BaseFetcher):
                 exc_info=True,
             )
             return False
+
+    async def _reset_session(self) -> None:
+        """Reset session and cookie state."""
+        self._cookies = None
+        self._cookie_expiry = None
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
 
     async def _ensure_session(self) -> None:
         """Ensure we have valid session cookies."""
@@ -159,6 +169,7 @@ class NSEFetcher(BaseFetcher):
                 "backoff_factor", 2
             ),
             backoff_max=self.retry_config.get("backoff_max", 16),
+            auth_failure_handler=self._refresh_session,
         )
 
         if data and "data" in data:
@@ -217,6 +228,7 @@ class NSEFetcher(BaseFetcher):
             url=url,
             headers=headers,
             params=params,
+            auth_failure_handler=self._refresh_session,
         )
 
         if data and "priceInfo" in data:
@@ -263,6 +275,7 @@ class NSEFetcher(BaseFetcher):
             url=url,
             headers=headers,
             params=params,
+            auth_failure_handler=self._refresh_session,
         )
 
         if data and "data" in data:
