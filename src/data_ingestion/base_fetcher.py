@@ -18,7 +18,7 @@ Fallbacks:
 import asyncio
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiohttp
 
@@ -105,6 +105,9 @@ class BaseFetcher(ABC):
         max_retries: int = 3,
         backoff_factor: float = 2.0,
         backoff_max: float = 16.0,
+        auth_failure_handler: Optional[
+            Callable[[], Awaitable[bool]]
+        ] = None,
     ) -> Optional[Dict]:
         """
         Make HTTP request with retry and backoff.
@@ -147,6 +150,29 @@ class BaseFetcher(ABC):
                         )
                         await asyncio.sleep(delay)
                     elif response.status in (403, 401):
+                        if (
+                            auth_failure_handler
+                            and attempt < max_retries - 1
+                        ):
+                            logger.warning(
+                                f"HTTP {response.status} from "
+                                f"{self.source_name} (attempting "
+                                f"auth refresh)",
+                                extra={
+                                    "source": self.source_name,
+                                    "status": response.status,
+                                    "url": url,
+                                },
+                            )
+                            refreshed = await auth_failure_handler()
+                            if refreshed:
+                                delay = min(
+                                    backoff_factor ** (attempt + 1),
+                                    backoff_max,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+
                         # Auth/forbidden - no point retrying
                         logger.warning(
                             f"HTTP {response.status} from "
