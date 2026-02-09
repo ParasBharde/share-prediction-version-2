@@ -20,6 +20,8 @@ Fallbacks:
 """
 
 import asyncio
+import csv
+from io import StringIO
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -29,9 +31,11 @@ from src.data_ingestion.base_fetcher import BaseFetcher
 from src.monitoring.logger import get_logger
 from src.utils.constants import (
     NSE_API_BASE,
+    NSE_ARCHIVE_BASE,
     NSE_BASE_URL,
     NSE_HEADERS,
     NSE_HOMEPAGE_HEADERS,
+    NSE_INDEX_ARCHIVE_PATH,
 )
 
 logger = get_logger(__name__)
@@ -285,7 +289,76 @@ class NSEFetcher(BaseFetcher):
                 if "symbol" in stock
             ]
 
+        archive_symbols = await self._fetch_index_archive(
+            index
+        )
+        if archive_symbols:
+            logger.info(
+                f"Fetched {len(archive_symbols)} symbols from "
+                f"NSE archive for {index}"
+            )
+            return archive_symbols
+
         return []
+
+    async def _fetch_index_archive(
+        self, index: str
+    ) -> List[str]:
+        """
+        Fetch index constituents from NSE archive CSVs.
+
+        Args:
+            index: Index name (e.g., 'NIFTY 500').
+
+        Returns:
+            List of stock symbols.
+        """
+        archive_map = {
+            "NIFTY 50": "ind_nifty50list.csv",
+            "NIFTY 100": "ind_nifty100list.csv",
+            "NIFTY 500": "ind_nifty500list.csv",
+        }
+        archive_file = archive_map.get(index)
+        if not archive_file:
+            return []
+
+        url = (
+            f"{NSE_ARCHIVE_BASE}{NSE_INDEX_ARCHIVE_PATH}"
+            f"/{archive_file}"
+        )
+        headers = {
+            **NSE_HEADERS,
+            "Accept": "text/csv",
+            "Referer": NSE_BASE_URL,
+        }
+
+        session = await self._get_session()
+        try:
+            async with session.get(
+                url, headers=headers
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        f"NSE archive fetch got HTTP "
+                        f"{response.status} for {index}"
+                    )
+                    return []
+                body = await response.text()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"NSE archive fetch failed for {index}: {exc}"
+            )
+            return []
+
+        reader = csv.DictReader(StringIO(body))
+        symbols = [
+            row["Symbol"].strip()
+            for row in reader
+            if row.get("Symbol")
+        ]
+        return symbols
 
     def _parse_historical_data(
         self, raw_data: List[Dict], symbol: str

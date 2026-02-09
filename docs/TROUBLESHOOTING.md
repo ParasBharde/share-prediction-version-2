@@ -7,8 +7,9 @@
 **Solution:**
 1. Check rate limits in `config/data_sources.yaml`
 2. Increase `backoff_factor` and `backoff_max`
-3. System will automatically use Yahoo Finance fallback
-4. Check `logs/data.log` for details
+3. System will attempt NSE archive CSVs for index constituents
+4. System will automatically use Yahoo Finance fallback for price data
+5. Check `logs/data.log` for details
 
 ### Database Connection Failed
 **Cause:** PostgreSQL not running or wrong credentials
