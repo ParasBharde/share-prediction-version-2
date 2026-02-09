@@ -84,17 +84,7 @@ class NSEFetcher(BaseFetcher):
                 headers=NSE_HOMEPAGE_HEADERS,
                 allow_redirects=True,
             ) as response:
-                if response.status == 200:
-                    self._cookies = {}
-                    for cookie in session.cookie_jar:
-                        self._cookies[cookie.key] = cookie.value
-                    self._cookie_expiry = datetime.now()
-                    logger.info(
-                        f"NSE session cookies refreshed: "
-                        f"{list(self._cookies.keys())}"
-                    )
-                    return True
-                else:
+                if response.status != 200:
                     logger.warning(
                         f"NSE session refresh got HTTP "
                         f"{response.status}"
@@ -102,6 +92,32 @@ class NSEFetcher(BaseFetcher):
                     if response.status in (401, 403):
                         await self._reset_session()
                     return False
+
+            warm_headers = {**NSE_HOMEPAGE_HEADERS}
+            warm_headers["Referer"] = NSE_BASE_URL
+            async with session.get(
+                f"{NSE_BASE_URL}/option-chain",
+                headers=warm_headers,
+                allow_redirects=True,
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        f"NSE option-chain warmup got HTTP "
+                        f"{response.status}"
+                    )
+                    if response.status in (401, 403):
+                        await self._reset_session()
+                    return False
+
+            self._cookies = {}
+            for cookie in session.cookie_jar:
+                self._cookies[cookie.key] = cookie.value
+            self._cookie_expiry = datetime.now()
+            logger.info(
+                f"NSE session cookies refreshed: "
+                f"{list(self._cookies.keys())}"
+            )
+            return True
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as e:

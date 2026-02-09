@@ -16,6 +16,7 @@ Fallbacks:
 """
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -132,7 +133,37 @@ class BaseFetcher(ABC):
                     url, headers=headers, params=params
                 ) as response:
                     if response.status == 200:
-                        return await response.json()
+                        try:
+                            return await response.json(
+                                content_type=None
+                            )
+                        except (
+                            aiohttp.ContentTypeError,
+                            json.JSONDecodeError,
+                        ) as exc:
+                            logger.warning(
+                                f"Non-JSON response from "
+                                f"{self.source_name}, retrying",
+                                extra={
+                                    "source": self.source_name,
+                                    "url": url,
+                                    "error": str(exc),
+                                    "attempt": attempt + 1,
+                                },
+                            )
+                            if (
+                                auth_failure_handler
+                                and attempt < max_retries - 1
+                            ):
+                                await auth_failure_handler()
+                                delay = min(
+                                    backoff_factor ** (attempt + 1),
+                                    backoff_max,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            last_status = response.status
+                            break
                     elif response.status == 429:
                         # Rate limited - retry with backoff
                         delay = min(
