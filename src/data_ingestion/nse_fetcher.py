@@ -27,6 +27,12 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+try:
+    # Optional dependency: more stable NSE symbol endpoints.
+    from nsepython import nse_eq_symbols
+except Exception:
+    nse_eq_symbols = None
+
 from src.data_ingestion.base_fetcher import BaseFetcher
 from src.monitoring.logger import get_logger
 from src.utils.constants import (
@@ -283,6 +289,15 @@ class NSEFetcher(BaseFetcher):
         Returns:
             List of stock symbols.
         """
+        # Prefer nsepython for full equity universe when available.
+        library_symbols = await self._fetch_symbols_via_nsepython(index)
+        if library_symbols:
+            logger.info(
+                f"Fetched {len(library_symbols)} symbols via nsepython "
+                f"for {index}"
+            )
+            return library_symbols
+
         await self._ensure_session()
 
         url = f"{NSE_API_BASE}/equity-stockIndices"
@@ -316,6 +331,41 @@ class NSEFetcher(BaseFetcher):
             return archive_symbols
 
         return []
+
+    async def _fetch_symbols_via_nsepython(
+        self, index: str
+    ) -> List[str]:
+        """Fetch symbols using optional nsepython helper."""
+        if nse_eq_symbols is None:
+            return []
+
+        try:
+            symbols = await asyncio.to_thread(nse_eq_symbols)
+            if not isinstance(symbols, list):
+                return []
+
+            cleaned = [str(s).strip() for s in symbols if s]
+            if not cleaned:
+                return []
+
+            index_map = {
+                "NIFTY 50": "NIFTY50",
+                "NIFTY 100": "NIFTY100",
+                "NIFTY 500": "NIFTY500",
+            }
+            target_index = index_map.get(index)
+
+            # nsepython provides all equity symbols. For index-specific
+            # scans, keep using API/archive path for precise membership.
+            if target_index is None:
+                return cleaned
+
+            return []
+        except Exception as exc:
+            logger.debug(
+                f"nsepython symbol fetch failed for {index}: {exc}"
+            )
+            return []
 
     async def _fetch_index_archive(
         self, index: str
