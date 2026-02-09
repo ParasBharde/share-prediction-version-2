@@ -30,6 +30,7 @@ import logging
 import logging.handlers
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -116,6 +117,63 @@ class ConsoleFormatter(logging.Formatter):
         return formatted
 
 
+class SafeTimedRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """TimedRotatingFileHandler that tolerates rollover failures on Windows."""
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except PermissionError as exc:
+            self._handle_rollover_error(exc)
+        except OSError as exc:
+            self._handle_rollover_error(exc)
+
+    def _handle_rollover_error(self, exc: Exception) -> None:
+        if self.stream:
+            try:
+                self.stream.close()
+            except OSError:
+                pass
+            self.stream = None
+
+        self.rolloverAt = self.computeRollover(int(time.time()))
+        try:
+            self.stream = self._open()
+        except OSError:
+            self.stream = None
+
+        sys.stderr.write(
+            "WARNING: Log rollover skipped due to file lock. "
+            f"{exc}\n"
+        )
+
+
+_SHARED_HANDLERS: dict[str, logging.Handler] = {}
+
+
+def _get_shared_handler(
+    key: str,
+    filename: str,
+    level: int,
+    backup_count: int,
+) -> logging.Handler:
+    handler = _SHARED_HANDLERS.get(key)
+    if handler is None:
+        handler = SafeTimedRotatingFileHandler(
+            filename=filename,
+            when="midnight",
+            interval=1,
+            backupCount=backup_count,
+            encoding="utf-8",
+            utc=True,
+            delay=True,
+        )
+        handler.setLevel(level)
+        handler.setFormatter(JSONFormatter())
+        _SHARED_HANDLERS[key] = handler
+    return handler
+
+
 def setup_logger(
     name: str,
     log_file: Optional[str] = None,
@@ -134,6 +192,7 @@ def setup_logger(
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
+    logger.propagate = False
 
     # Prevent duplicate handlers
     if logger.handlers:
@@ -146,27 +205,21 @@ def setup_logger(
     logger.addHandler(console_handler)
 
     # Daily rotating file handler
-    file_handler = logging.handlers.TimedRotatingFileHandler(
+    file_handler = _get_shared_handler(
+        key=f"daily:{log_file or 'logs/daily.log'}",
         filename=log_file or "logs/daily.log",
-        when="midnight",
-        interval=1,
-        backupCount=7,
-        encoding="utf-8",
+        level=logging.DEBUG,
+        backup_count=7,
     )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(JSONFormatter())
     logger.addHandler(file_handler)
 
     # Error file handler (errors only)
-    error_handler = logging.handlers.TimedRotatingFileHandler(
+    error_handler = _get_shared_handler(
+        key="errors:logs/errors.log",
         filename="logs/errors.log",
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8",
+        level=logging.ERROR,
+        backup_count=30,
     )
-    error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(JSONFormatter())
     logger.addHandler(error_handler)
 
     return logger
