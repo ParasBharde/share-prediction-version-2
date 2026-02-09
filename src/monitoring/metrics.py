@@ -6,7 +6,7 @@ Purpose:
     Provides metric helpers for instrumentation.
 
 Dependencies:
-    - prometheus_client
+    - prometheus_client (optional)
 
 Logging:
     Metric registration at DEBUG level.
@@ -15,19 +15,60 @@ Fallbacks:
     If Prometheus unavailable, metrics are no-ops.
 """
 
-from prometheus_client import (
-    Counter,
-    Gauge,
-    Histogram,
-    Summary,
-    start_http_server,
-    CollectorRegistry,
-    REGISTRY,
-)
-
 from src.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
+
+try:
+    from prometheus_client import (
+        Counter,
+        Gauge,
+        Histogram,
+        Summary,
+        start_http_server,
+        CollectorRegistry,
+        REGISTRY,
+    )
+    _PROMETHEUS_AVAILABLE = True
+except Exception:
+    _PROMETHEUS_AVAILABLE = False
+    logger.debug(
+        "prometheus_client not installed, metrics will be no-ops"
+    )
+
+    # No-op stubs so the rest of the codebase can call
+    # metric.labels(...).inc() / .observe() / .set() without errors.
+
+    class _NoOpMetric:
+        """Stub metric that silently ignores all operations."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def labels(self, *args, **kwargs):
+            return self
+
+        def inc(self, *args, **kwargs):
+            pass
+
+        def dec(self, *args, **kwargs):
+            pass
+
+        def set(self, *args, **kwargs):
+            pass
+
+        def observe(self, *args, **kwargs):
+            pass
+
+    Counter = _NoOpMetric
+    Gauge = _NoOpMetric
+    Histogram = _NoOpMetric
+    Summary = _NoOpMetric
+    REGISTRY = None
+
+    def start_http_server(*args, **kwargs):
+        pass
+
 
 # --- Job Metrics ---
 
@@ -180,6 +221,12 @@ def start_metrics_server(port: int = 9090) -> None:
     Args:
         port: Port to expose metrics on.
     """
+    if not _PROMETHEUS_AVAILABLE:
+        logger.info(
+            "Prometheus not available, metrics server not started"
+        )
+        return
+
     try:
         start_http_server(port)
         logger.info(
