@@ -38,6 +38,8 @@ class VolumeSurgeStrategy(BaseStrategy):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.data_config = config.get("data", {})
+        self.timeframe = self.data_config.get("timeframe", "1D")
         self._scan_stats = {
             "total": 0,
             "pre_filter_rejected": 0,
@@ -218,6 +220,7 @@ class VolumeSurgeStrategy(BaseStrategy):
                 total_indicators=total_indicators,
                 indicator_details=indicator_details,
                 metadata={
+                    "timeframe": self.timeframe,
                     "volume_surge": current_vol_ratio
                     if "current_vol_ratio" in dir()
                     else 0,

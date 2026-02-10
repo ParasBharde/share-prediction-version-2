@@ -1,0 +1,82 @@
+# Paper Trading Configuration
+# Purpose: Controls automated paper trading from scan signals
+# Read by: paper_trading.paper_trading_engine, paper_trading.order_simulator,
+#          paper_trading.portfolio_manager, paper_trading.performance_tracker
+
+enabled: true
+
+portfolio:
+  initial_capital: 1000000  # INR (10 Lakh)
+  max_positions: 10
+  max_per_sector: 2
+
+position_sizing:
+  method: "risk_based"  # Options: fixed, risk_based
+  risk_per_trade_percent: 1.0  # Risk 1% of capital per trade
+  max_position_percent: 20.0  # Max 20% of capital in single stock
+  min_position_value: 10000  # Minimum position value in INR
+
+order_simulator:
+  slippage_pct: 0.001  # 0.1% (10 bps)
+  commission_pct: 0.0003  # 0.03% (3 bps)
+  max_quantity: 50000
+  rejection_symbols: []
+
+execution:
+  auto_place_orders: true
+  min_confidence_percent: 70.0  # Only auto-trade signals with >= 70% confidence
+  order_type: "MARKET"  # Options: MARKET, LIMIT
+  limit_offset_percent: 0.05  # For LIMIT orders, offset from signal price
+
+exit_management:
+  auto_exit_on_target: true
+  auto_exit_on_stop_loss: true
+  trailing_stop_enabled: false
+  trailing_stop_atr_multiplier: 2.0
+
+performance:
+  risk_free_rate: 0.065  # 6.5% (Indian govt bond yield)
+  trading_days_per_year: 252
+
+# Trading time rules per strategy timeframe
+trading_time:
+  "1D":
+    entry_session: "next_market_open"  # Enter at next market open
+    entry_window_start: "09:15"  # IST
+    entry_window_end: "10:30"  # IST - first 75 min
+    signal_validity_days: 2  # Signal valid for 2 trading days
+    holding_period_min_days: 1
+    holding_period_max_days: 30
+    description: "Daily timeframe - Enter at market open, valid for 2 trading days"
+  "4H":
+    entry_session: "next_session"
+    entry_window_start: "09:15"
+    entry_window_end: "15:30"
+    signal_validity_days: 1
+    holding_period_min_days: 1
+    holding_period_max_days: 15
+    description: "4-Hour timeframe - Enter at next 4H session, valid for 1 day"
+  "1H":
+    entry_session: "next_hour"
+    entry_window_start: "09:15"
+    entry_window_end: "15:30"
+    signal_validity_days: 1
+    holding_period_min_days: 0
+    holding_period_max_days: 5
+    description: "1-Hour timeframe - Enter at next hourly candle, intraday valid"
+  "30m":
+    entry_session: "immediate"
+    entry_window_start: "09:15"
+    entry_window_end: "15:30"
+    signal_validity_days: 0
+    holding_period_min_days: 0
+    holding_period_max_days: 2
+    description: "30-Min timeframe - Immediate entry during market hours"
+  "15m":
+    entry_session: "immediate"
+    entry_window_start: "09:15"
+    entry_window_end: "15:00"
+    signal_validity_days: 0
+    holding_period_min_days: 0
+    holding_period_max_days: 1
+    description: "15-Min timeframe - Immediate entry, intraday only"
