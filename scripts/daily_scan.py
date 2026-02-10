@@ -514,6 +514,7 @@ async def _get_stock_universe(
         "NIFTY50": "NIFTY 50",
         "NIFTY100": "NIFTY 100",
         "NIFTY500": "NIFTY 500",
+        "ALL": "ALL",
     }
 
     # ========================================================================
