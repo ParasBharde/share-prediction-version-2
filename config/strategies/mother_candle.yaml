@@ -14,11 +14,16 @@ strategy:
     Mother's High (BUY) or below Mother's Low (SELL). Stop loss
     at the opposite end of the Mother Candle.
   params:
-    min_baby_candles: 2     # Minimum number of inside candles (relaxed from 3)
-    max_baby_candles: 8     # Maximum number of inside candles (widened from 6)
-    mother_body_min_percent: 0.8  # Min range of mother as % of price (relaxed from 1.0)
-    trend_confirmation: true  # Require EMA trend alignment
+    min_baby_candles: 2
+    max_baby_candles: 6
+    mother_body_min_percent: 0.8
+    trend_confirmation: true
+    max_entry_buffer_pct: 2.5    # Rejects if price is >2.5% away from breakout level
+    mandatory_volume: true
 
+data:
+  timeframe: "1D"        # Options: 1D, 4H, 1H, 30m, 15m
+  lookback_bars: 200  
 # Pre-filters (applied before technical analysis)
 filters:
   market_cap_min: 500   # Crores
@@ -64,14 +69,14 @@ indicators:
     weight: 0.10
 
 signal_generation:
-  min_conditions_met: 3  # Out of 5 (pattern + 2 confirmations)
-  confidence_threshold: 0.50
+  min_conditions_met: 4  # Out of 5 (pattern + 2 confirmations)
+  confidence_threshold: 0.70
   signal_type: "BOTH"  # Can generate BUY or SELL
 
 risk_management:
   stop_loss:
     type: "pattern_based"  # Stop loss at opposite end of mother candle
-    max_percent: 8  # Maximum stop loss cap
+    max_percent: 7.0  # Maximum stop loss cap
   target:
     type: "risk_reward"
     ratio: 2.0

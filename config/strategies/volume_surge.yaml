@@ -6,7 +6,7 @@
 strategy:
   name: "Volume Surge"
   version: "1.0"
-  enabled: true
+  enabled: false
   priority: 3
   description: "Unusual volume with price confirmation"
 

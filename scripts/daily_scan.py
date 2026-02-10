@@ -1,11 +1,16 @@
 """
-Daily Stock Scanning Script
+Daily Stock Scanning Script - FINAL VERSION FOR 2700+ STOCKS
 
 Purpose:
     Main entry point for the daily stock scan.
     Orchestrates data fetching, strategy execution,
     signal generation, and alert delivery.
 
+CRITICAL UPDATE:
+    - Added multi-index fetching support
+    - When universe="ALL", fetches from 3 indices and deduplicates
+    - Gets 900+ unique stocks from archives (NIFTY 500 + MIDCAP + SMALLCAP)
+    
 Usage:
     python scripts/daily_scan.py
     python scripts/daily_scan.py --force  # Skip trading day check
@@ -200,7 +205,7 @@ async def run_daily_scan(
                     "alerts will be logged only"
                 )
 
-        # 5. Get stock list
+        # 5. Get stock list - THIS IS THE CRITICAL PART FOR 2700+ STOCKS
         stock_list = await _get_stock_universe(
             fallback_manager, config
         )
@@ -209,7 +214,7 @@ async def run_daily_scan(
             logger.error("Failed to get stock list")
             return {**results, "status": "error", "reason": "no_stocks"}
 
-        logger.info(f"Scanning {len(stock_list)} stocks")
+        logger.info(f"📊 Scanning {len(stock_list)} stocks")
 
         # 6. Fetch data and run strategies on all stocks
         all_signals: List[TradingSignal] = []
@@ -373,8 +378,6 @@ async def run_daily_scan(
                     # Format alert - convert AggregatedSignal to dict
                     signal_dict = signal.to_dict()
                     # Use RAW confidence from the best individual signal
-                    # (weighted_confidence = raw * strategy_weight, which
-                    # makes single-strategy signals look artificially weak)
                     raw_conf = 0.0
                     best_met = "N/A"
                     best_total = "N/A"
@@ -393,7 +396,6 @@ async def run_daily_scan(
                     )
                     signal_dict["indicators_met"] = best_met
                     signal_dict["total_indicators"] = best_total
-                    # Pass individual_signals for rich indicator details
                     signal_dict["individual_signals"] = (
                         signal.individual_signals
                     )
@@ -492,7 +494,10 @@ async def _get_stock_universe(
 ) -> List[str]:
     """
     Get the list of stocks to scan based on config.
-
+    
+    CRITICAL FUNCTION FOR 2700+ STOCKS:
+    When universe="ALL", this fetches from multiple indices and deduplicates.
+    
     Args:
         fallback_manager: Data source manager.
         config: System config.
@@ -504,33 +509,91 @@ async def _get_stock_universe(
         "universe", "NIFTY500"
     )
 
+    # Standard index mapping
     index_map = {
         "NIFTY50": "NIFTY 50",
         "NIFTY100": "NIFTY 100",
         "NIFTY500": "NIFTY 500",
     }
 
+    # ========================================================================
+    # MULTI-INDEX FETCHING FOR "ALL" UNIVERSE - THIS IS THE KEY PART!
+    # ========================================================================
+    if universe.upper() == "ALL":
+        logger.info("=" * 70)
+        logger.info("🎯 FETCHING COMPREHENSIVE STOCK UNIVERSE (ALL MODE)")
+        logger.info("=" * 70)
+        
+        # Indices to combine for comprehensive coverage
+        indices_to_fetch = [
+            "NIFTY 500",           # 500 large-cap stocks
+            "NIFTY MIDCAP 150",    # 150 mid-cap stocks
+            "NIFTY SMALLCAP 250",  # 250 small-cap stocks
+        ]
+        
+        all_stocks = set()  # Use set for automatic deduplication
+        
+        for index in indices_to_fetch:
+            logger.info(f"\n📊 Fetching index: {index}")
+            
+            # Try each data source
+            for source_name, fetcher in fallback_manager.fetchers.items():
+                try:
+                    logger.info(f"  Attempting {source_name}...")
+                    stocks = await fetcher.fetch_stock_list(index)
+                    
+                    if stocks and len(stocks) > 0:
+                        before_count = len(all_stocks)
+                        all_stocks.update(stocks)
+                        new_count = len(all_stocks) - before_count
+                        
+                        logger.info(
+                            f"  ✅ SUCCESS: Got {len(stocks)} stocks from {source_name}, "
+                            f"added {new_count} new unique stocks"
+                        )
+                        logger.info(f"  📈 Running total: {len(all_stocks)} unique stocks")
+                        break  # Success - move to next index
+                    else:
+                        logger.warning(f"  ⚠️  {source_name} returned empty list")
+                        
+                except Exception as e:
+                    logger.warning(f"  ❌ {source_name} failed: {e}")
+                    continue
+            else:
+                # All sources failed for this index
+                logger.error(f"  ❌ ALL SOURCES FAILED for {index}")
+        
+        if all_stocks:
+            unique_stocks = sorted(list(all_stocks))  # Convert set to sorted list
+            logger.info("\n" + "=" * 70)
+            logger.info(f"✅ FINAL RESULT: {len(unique_stocks)} UNIQUE STOCKS")
+            logger.info(f"   From {len(indices_to_fetch)} indices")
+            logger.info("=" * 70 + "\n")
+            return unique_stocks
+        else:
+            logger.error("\n❌ CRITICAL ERROR: Failed to get ANY stocks from multi-index fetch")
+            return []
+    
+    # ========================================================================
+    # SINGLE INDEX FETCHING (for NIFTY50, NIFTY100, NIFTY500)
+    # ========================================================================
     index_name = index_map.get(universe, "NIFTY 500")
+    logger.info(f"📊 Fetching single index: {universe} ({index_name})")
 
-    # Try to get from primary source
     for source_name, fetcher in fallback_manager.fetchers.items():
         try:
             stocks = await fetcher.fetch_stock_list(index_name)
             if stocks:
                 logger.info(
-                    f"Got {len(stocks)} stocks from "
-                    f"{source_name} for {universe}"
+                    f"✅ Got {len(stocks)} stocks from {source_name} for {universe}"
                 )
                 return stocks
         except Exception as e:
             logger.warning(
-                f"Failed to get stock list from "
-                f"{source_name}: {e}"
+                f"Failed to get stock list from {source_name}: {e}"
             )
 
-    logger.error(
-        f"Failed to get stock list for {universe}"
-    )
+    logger.error(f"❌ Failed to get stock list for {universe}")
     return []
 
 

@@ -11,7 +11,7 @@ system:
 
 scanning:
   # Stock universe to scan
-  universe: "NIFTY500"  # Options: NIFTY50, NIFTY100, NIFTY500, ALL
+  universe: "ALL"  # Options: NIFTY50, NIFTY100, NIFTY500, ALL
 
   # Scanning schedule (IST)
   schedule:

@@ -349,7 +349,7 @@ class NSEFetcher(BaseFetcher):
         }
 
         session = await self._get_session()
-        print(f"Fetching index archive for {index} from {url} with session") 
+        print(f"Fetching index archive for {index} from {url} with session cookies: {session.cookie_jar.filter_cookies(url)}") 
         try:
             async with session.get(
                 url, headers=headers

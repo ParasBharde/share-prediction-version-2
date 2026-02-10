@@ -39,6 +39,11 @@ docker-compose exec app python scripts/db_migrate.py
 docker-compose exec app python -m src.orchestrator.scheduler
 ```
 
+### Step 6: FOr FLush Redish
+```bash
+docker-compose exec redis redis-cli FLUSHALL
+```
+
 ## Option 2: Manual Setup
 
 ### Step 1: Install Dependencies

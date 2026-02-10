@@ -31,9 +31,7 @@ Fallbacks:
 """
 
 from typing import Any, Dict, Optional
-
 import pandas as pd
-
 from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
 from src.strategies.indicators.moving_averages import ema
@@ -45,393 +43,168 @@ logger = get_logger(__name__)
 
 
 class MotherCandleStrategy(BaseStrategy):
-    """Detects Mother Candle (Inside Bar) breakout patterns."""
+    """
+    Final Logic: Triggers ONLY if the last closing candle breaks the range.
+    Includes Entry Buffer, Mandatory Volume, and RSI Overbought filters.
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        # Scan stats for diagnostics
-        self._scan_stats = {
-            "total": 0,
-            "pre_filter_rejected": 0,
-            "insufficient_data": 0,
-            "no_pattern": 0,
-            "low_confidence": 0,
-            "signals": 0,
-        }
-
-    def get_scan_stats(self) -> Dict[str, int]:
-        """Return scan statistics for diagnostics."""
-        return dict(self._scan_stats)
+        self.data_config = config.get("data", {})
+        self.timeframe = self.data_config.get("timeframe", "1D")
+        self.lookback_bars = self.data_config.get("lookback_bars", 200)
 
     def scan(
-        self,
-        symbol: str,
-        df: pd.DataFrame,
-        company_info: Dict[str, Any],
+        self, symbol: str, df: pd.DataFrame, company_info: Dict[str, Any]
     ) -> Optional[TradingSignal]:
-        """
-        Scan a stock for Mother Candle breakout signals.
-
-        Looks for a large candle followed by 3-6 smaller candles
-        contained within it, then checks for breakout.
-
-        Args:
-            symbol: Stock symbol.
-            df: OHLCV DataFrame (min 50 rows recommended).
-            company_info: Company metadata.
-
-        Returns:
-            TradingSignal if breakout detected, None otherwise.
-        """
-        self._scan_stats["total"] += 1
-
-        # Apply pre-filters
-        if not self.apply_pre_filters(company_info):
-            self._scan_stats["pre_filter_rejected"] += 1
+        # Basic Pre-filters
+        if not self.apply_pre_filters(company_info) or len(df) < self.lookback_bars:
             return None
 
-        if len(df) < 50:
-            self._scan_stats["insufficient_data"] += 1
-            return None
-
-        # Strategy parameters from config
         params = self.strategy_config.get("params", {})
-        min_babies = params.get("min_baby_candles", 3)
+        min_babies = params.get("min_baby_candles", 2)
         max_babies = params.get("max_baby_candles", 6)
-        mother_body_min_pct = params.get(
-            "mother_body_min_percent", 1.0
-        )
-        trend_confirmation = params.get(
-            "trend_confirmation", True
-        )
+        min_pct = params.get("mother_body_min_percent", 0.8)
+        max_buffer = params.get("max_entry_buffer_pct", 2.5)
 
-        indicators_met = 0
-        total_indicators = len(self.indicators_config) or 5
-        weighted_score = 0.0
-        indicator_details = {}
-
-        # Detect Mother Candle pattern
-        pattern = self._find_mother_candle_pattern(
-            df, min_babies, max_babies, mother_body_min_pct
-        )
-
+        # 1. CORE PATTERN: Must break on the CURRENT (last) candle
+        pattern = self._find_last_candle_breakout(df, min_babies, max_babies, min_pct)
         if pattern is None:
-            self._scan_stats["no_pattern"] += 1
             return None
 
-        mother_idx = pattern["mother_idx"]
-        baby_count = pattern["baby_count"]
         breakout_type = pattern["breakout_type"]
         mother_high = pattern["mother_high"]
         mother_low = pattern["mother_low"]
-        breakout_price = pattern["breakout_price"]
+        entry_price = float(df.iloc[-1]["close"])
 
-        indicator_details["mother_candle"] = {
-            "mother_high": round(mother_high, 2),
-            "mother_low": round(mother_low, 2),
-            "mother_range_pct": round(
-                (mother_high - mother_low) / mother_low * 100, 2
-            ),
-            "baby_count": baby_count,
-            "breakout_type": breakout_type,
-            "passed": True,
+        # IMPROVEMENT: Max Entry Buffer Check (Don't chase the price)
+        breakout_level = mother_high if breakout_type == "BUY" else mother_low
+        distance_pct = abs(entry_price - breakout_level) / breakout_level * 100
+        if distance_pct > max_buffer:
+            logger.debug(f"{symbol}: Breakout overextended ({distance_pct:.2f}%)")
+            return None
+
+        indicators_met = 1
+        weighted_score = 0.35
+        indicator_details = {
+            "mother_candle": {"passed": True, "baby_count": pattern["baby_count"]}
         }
-        indicators_met += 1
-        weighted_score += 0.35
 
-        latest = df.iloc[-1]
-        entry_price = float(breakout_price)
-
-        # Confirmation indicators
-
-        # 1. Volume confirmation on breakout candle
+        # 2. MANDATORY VOLUME: Reject if Volume < 1.3
         try:
-            vol_ratio_series = volume_ratio(df["volume"], 20)
-            breakout_vol = float(vol_ratio_series.iloc[-1])
-            vol_ok = breakout_vol >= 1.5
-
-            indicator_details["volume_confirmation"] = {
-                "volume_ratio": round(breakout_vol, 2),
-                "threshold": 1.5,
-                "passed": vol_ok,
-            }
-
+            vol_r = float(volume_ratio(df["volume"], 20).iloc[-1])
+            if params.get("mandatory_volume", True) and vol_r < 1.3:
+                return None
+            vol_ok = vol_r >= 1.5
             if vol_ok:
                 indicators_met += 1
                 weighted_score += 0.20
-        except Exception as e:
-            logger.debug(f"{symbol}: Volume calc error: {e}")
+            indicator_details["volume"] = {"value": round(vol_r, 2), "passed": vol_ok}
+        except Exception:
+            pass
 
-        # 2. Trend alignment (EMA 20 > EMA 50 for BUY)
-        if trend_confirmation:
-            try:
-                ema_20 = float(ema(df["close"], 20).iloc[-1])
-                ema_50 = float(ema(df["close"], 50).iloc[-1])
-
-                if breakout_type == "BUY":
-                    trend_ok = ema_20 > ema_50
-                else:
-                    trend_ok = ema_20 < ema_50
-
-                indicator_details["trend_alignment"] = {
-                    "ema_20": round(ema_20, 2),
-                    "ema_50": round(ema_50, 2),
-                    "direction": breakout_type,
-                    "passed": trend_ok,
-                }
-
-                if trend_ok:
-                    indicators_met += 1
-                    weighted_score += 0.20
-            except Exception as e:
-                logger.debug(
-                    f"{symbol}: Trend confirmation error: {e}"
-                )
-
-        # 3. RSI not overbought/oversold
+        # 3. TREND CONFIRMATION
         try:
-            rsi_values = rsi(df["close"], 14)
-            current_rsi = float(rsi_values.iloc[-1])
+            e20, e50 = float(ema(df["close"], 20).iloc[-1]), float(
+                ema(df["close"], 50).iloc[-1]
+            )
+            trend_ok = (e20 > e50) if breakout_type == "BUY" else (e20 < e50)
+            if trend_ok:
+                indicators_met += 1
+                weighted_score += 0.20
+            indicator_details["trend"] = {"passed": trend_ok}
+        except Exception:
+            pass
 
-            if breakout_type == "BUY":
-                rsi_ok = 40 <= current_rsi <= 75
-            else:
-                rsi_ok = 25 <= current_rsi <= 60
-
-            indicator_details["rsi"] = {
-                "value": round(current_rsi, 2),
-                "passed": rsi_ok,
-            }
-
+        # 4. RSI FILTER (Reject Overbought > 70 for BUY)
+        try:
+            curr_rsi = float(rsi(df["close"], 14).iloc[-1])
+            if breakout_type == "BUY" and curr_rsi > 70:
+                return None
+            rsi_ok = (
+                (40 <= curr_rsi <= 70)
+                if breakout_type == "BUY"
+                else (30 <= curr_rsi <= 60)
+            )
             if rsi_ok:
                 indicators_met += 1
                 weighted_score += 0.15
-        except Exception as e:
-            logger.debug(f"{symbol}: RSI calc error: {e}")
+            indicator_details["rsi"] = {"value": round(curr_rsi, 2), "passed": rsi_ok}
+        except Exception:
+            pass
 
-        # 4. ADX trend strength (higher ADX = stronger trend)
+        # 5. ADX STRENGTH
         try:
-            adx_df = adx(df["high"], df["low"], df["close"], 14)
-            current_adx = float(adx_df["adx"].iloc[-1])
-            adx_ok = current_adx >= 20
-
-            indicator_details["adx"] = {
-                "value": round(current_adx, 2),
-                "threshold": 20,
-                "passed": adx_ok,
-            }
-
+            curr_adx = float(
+                adx(df["high"], df["low"], df["close"], 14)["adx"].iloc[-1]
+            )
+            adx_ok = curr_adx >= 20
             if adx_ok:
                 indicators_met += 1
                 weighted_score += 0.10
-        except Exception as e:
-            logger.debug(f"{symbol}: ADX calc error: {e}")
+            indicator_details["adx"] = {"value": round(curr_adx, 2), "passed": adx_ok}
+        except Exception:
+            pass
 
-        # Check signal generation criteria
-        min_conditions = self.signal_config.get(
-            "min_conditions_met", 3
-        )
-        confidence_threshold = self.signal_config.get(
-            "confidence_threshold", 0.50
-        )
+        # Final Approval
+        min_met = self.signal_config.get("min_conditions_met", 4)
+        if indicators_met >= min_met:
+            sl = round(mother_low if breakout_type == "BUY" else mother_high, 2)
+            # Automatic Stop Loss Distance Filter
+            if (abs(entry_price - sl) / entry_price * 100) > 7.0:
+                return None
 
-        if (
-            indicators_met >= min_conditions
-            and weighted_score >= confidence_threshold
-        ):
-            # Stop loss at opposite end of mother candle
-            if breakout_type == "BUY":
-                signal_type = SignalType.BUY
-                stop_loss = round(mother_low, 2)
-                # Target: risk-reward based
-                risk = entry_price - stop_loss
-                ratio = self.risk_config.get("target", {}).get(
-                    "ratio", 2.0
-                )
-                target = round(entry_price + (risk * ratio), 2)
-            else:
-                signal_type = SignalType.SELL
-                stop_loss = round(mother_high, 2)
-                risk = stop_loss - entry_price
-                ratio = self.risk_config.get("target", {}).get(
-                    "ratio", 2.0
-                )
-                target = round(entry_price - (risk * ratio), 2)
-
-            signal = TradingSignal(
+            return TradingSignal(
                 symbol=symbol,
                 company_name=company_info.get("name", symbol),
                 strategy_name=self.name,
-                signal_type=signal_type,
+                signal_type=(
+                    SignalType.BUY if breakout_type == "BUY" else SignalType.SELL
+                ),
                 confidence=round(weighted_score, 4),
                 entry_price=entry_price,
-                target_price=target,
-                stop_loss=stop_loss,
+                target_price=round(entry_price + (abs(entry_price - sl) * 2.0), 2),
+                stop_loss=sl,
                 priority=AlertPriority.HIGH,
                 indicators_met=indicators_met,
-                total_indicators=total_indicators,
+                total_indicators=5,
                 indicator_details=indicator_details,
                 metadata={
-                    "pattern": "mother_candle",
-                    "baby_count": baby_count,
-                    "mother_range": round(
-                        mother_high - mother_low, 2
-                    ),
-                    "breakout_direction": breakout_type,
-                    "sector": company_info.get(
-                        "sector", "Unknown"
-                    ),
+                    "timeframe": self.timeframe,
+                    "baby_count": pattern["baby_count"],
                 },
             )
-
-            logger.info(
-                f"SIGNAL: {self.name} - {symbol} "
-                f"({breakout_type}, babies={baby_count}, "
-                f"confidence: {weighted_score:.2f}, "
-                f"indicators: {indicators_met}/{total_indicators})",
-                extra=signal.to_dict(),
-            )
-
-            self._scan_stats["signals"] += 1
-            return signal
-
-        # Pattern found but indicators didn't meet threshold
-        self._scan_stats["low_confidence"] += 1
-        logger.info(
-            f"{symbol}: Mother Candle pattern found "
-            f"(babies={baby_count}, {breakout_type}) but "
-            f"only {indicators_met}/{min_conditions} indicators met "
-            f"(score={weighted_score:.2f}/{confidence_threshold})"
-        )
         return None
 
-    def _find_mother_candle_pattern(
-        self,
-        df: pd.DataFrame,
-        min_babies: int,
-        max_babies: int,
-        mother_body_min_pct: float,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Search recent candles for a Mother Candle pattern.
-
-        Looks backwards from the latest candle to find a pattern
-        where a large candle is followed by 3+ smaller candles
-        within its range (with slight tolerance), and the latest
-        candle breaks out.
-
-        Args:
-            df: OHLCV DataFrame.
-            min_babies: Minimum baby candles required (default 3).
-            max_babies: Maximum baby candles to consider (default 6).
-            mother_body_min_pct: Minimum body size of mother candle
-                as percentage of price.
-
-        Returns:
-            Pattern dict or None if not found.
-        """
-        if len(df) < min_babies + 2:
-            return None
-
-        latest = df.iloc[-1]
-
-        # Search wider window: up to max_babies+8 bars back
-        # This finds patterns where the mother formed earlier
-        search_start = min(len(df) - 1, max_babies + 8)
-        search_end = min_babies + 1
-
-        # Allow baby candle wicks to poke slightly (0.3% of mother range)
-        # outside the mother's range - handles minor wick noise
-        tolerance_pct = 0.003
-
-        best_pattern = None
-        best_baby_count = 0
-
-        for lookback in range(search_start, search_end - 1, -1):
-            if lookback >= len(df):
-                continue
-
-            mother_idx = len(df) - 1 - lookback
+    def _find_last_candle_breakout(self, df, min_babies, max_babies, min_pct):
+        last_close = float(df.iloc[-1]["close"])
+        for b in range(min_babies, max_babies + 1):
+            mother_idx = -(b + 2)
+            if abs(mother_idx) > len(df):
+                break
             mother = df.iloc[mother_idx]
-            mother_high = float(mother["high"])
-            mother_low = float(mother["low"])
-
-            if mother_low <= 0:
+            m_h, m_l = float(mother["high"]), float(mother["low"])
+            if m_l <= 0 or ((m_h - m_l) / m_l * 100) < min_pct:
                 continue
 
-            mother_range_pct = (
-                (mother_high - mother_low) / mother_low * 100
-            )
-            if mother_range_pct < mother_body_min_pct:
-                continue
-
-            # Tolerance zone for baby candle wicks
-            tol = (mother_high - mother_low) * tolerance_pct
-            allowed_high = mother_high + tol
-            allowed_low = mother_low - tol
-
-            baby_count = 0
-            all_inside = True
-
-            for j in range(mother_idx + 1, len(df) - 1):
-                candle = df.iloc[j]
-                c_high = float(candle["high"])
-                c_low = float(candle["low"])
-
-                if c_high <= allowed_high and c_low >= allowed_low:
-                    baby_count += 1
-                else:
-                    all_inside = False
-                    break
-
-            if not all_inside or baby_count < min_babies:
-                continue
-
-            if baby_count > max_babies:
-                continue
-
-            # Check if latest candle breaks out
-            latest_close = float(latest["close"])
-
-            breakout_type = None
-            breakout_price = None
-
-            if latest_close > mother_high:
-                breakout_type = "BUY"
-                breakout_price = latest_close
-            elif latest_close < mother_low:
-                breakout_type = "SELL"
-                breakout_price = latest_close
-
-            if breakout_type is None:
-                # Consolidating but no breakout yet
-                logger.debug(
-                    f"Mother Candle consolidation (no breakout): "
-                    f"babies={baby_count}, "
-                    f"range={mother_low:.2f}-{mother_high:.2f}, "
-                    f"close={latest_close:.2f}"
-                )
-                continue
-
-            # Keep best pattern (most baby candles)
-            if baby_count > best_baby_count:
-                best_baby_count = baby_count
-                best_pattern = {
-                    "mother_idx": mother_idx,
-                    "baby_count": baby_count,
-                    "breakout_type": breakout_type,
-                    "mother_high": mother_high,
-                    "mother_low": mother_low,
-                    "breakout_price": breakout_price,
-                }
-
-        if best_pattern:
-            logger.info(
-                f"Mother Candle pattern found: "
-                f"babies={best_pattern['baby_count']}, "
-                f"breakout={best_pattern['breakout_type']}, "
-                f"range={best_pattern['mother_low']:.2f}"
-                f"-{best_pattern['mother_high']:.2f}"
-            )
-
-        return best_pattern
+            # Ensure all candles between mother and last are inside
+            if all(
+                float(df.iloc[j]["high"]) <= m_h * 1.003
+                and float(df.iloc[j]["low"]) >= m_l * 0.997
+                for j in range(mother_idx + 1, -1)
+            ):
+                if last_close > m_h:
+                    return {
+                        "mother_high": m_h,
+                        "mother_low": m_l,
+                        "baby_count": b,
+                        "breakout_type": "BUY",
+                    }
+                if last_close < m_l:
+                    return {
+                        "mother_high": m_h,
+                        "mother_low": m_l,
+                        "baby_count": b,
+                        "breakout_type": "SELL",
+                    }
+        return None
