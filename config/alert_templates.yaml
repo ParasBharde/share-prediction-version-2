@@ -28,13 +28,15 @@ templates:
     📍 *TRADE SETUP*
     ━━━━━━━━━━━━━━━━━━━━
     ▫️ Entry:      `{{ currency }}{{ entry_price }}`
-    🔴 Stop Loss:  `{{ currency }}{{ stop_loss }}` (-{{ stop_loss_pct }}%)
-    🟢 Target:     `{{ currency }}{{ target_price }}` (+{{ target_pct }}%)
+    🔴 Stop Loss:  `{{ currency }}{{ stop_loss }}` ({{ stop_loss_pct }}%)
+    🟢 Target:     `{{ currency }}{{ target_price }}` ({{ target_pct }}%)
 
     ⚖️ R:R = `1:{{ rr_ratio }}` | Risk `{{ currency }}{{ risk_amount }}` → Reward `{{ currency }}{{ reward_amount }}`
     {% if has_trading_time %}
     🕐 *TIMING*
     📅 Entry: {{ entry_date }} | `{{ entry_window }}`
+    🚫 Skip if {% if signal_type in ['BUY', 'STRONG_BUY'] %}opens above{% else %}opens below{% endif %}: `{{ currency }}{{ max_entry_price }}`
+    📊 Volatility: `{{ volatility }}` (ATR {{ atr_pct }}%)
     ⏳ Valid: {{ signal_validity_days }} day(s) → {{ validity_expiry }}
     📌 Hold: {{ holding_period }}
     {% endif %}

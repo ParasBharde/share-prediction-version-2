@@ -41,9 +41,9 @@ _FALLBACK_TEMPLATES: Dict[str, str] = {
         "{{ signal_type }} SIGNAL - {{ symbol }}\n"
         "Strategy: {{ strategy_name }}\n"
         "Entry: {{ currency }}{{ entry_price }}\n"
-        "SL: {{ currency }}{{ stop_loss }} (-{{ stop_loss_pct }}%)\n"
+        "SL: {{ currency }}{{ stop_loss }} ({{ stop_loss_pct }}%)\n"
         "Target: {{ currency }}{{ target_price }} "
-        "(+{{ target_pct }}%)\n"
+        "({{ target_pct }}%)\n"
         "R:R = 1:{{ rr_ratio }}\n"
         "Confidence: {{ confidence }}% "
         "({{ indicators_met }}/{{ total_indicators }})\n"
@@ -135,17 +135,24 @@ class AlertFormatter:
         target = signal.get("target_price", 0) or 0
         sl = signal.get("stop_loss", 0) or 0
 
-        # Compute percentages
-        target_pct = 0.0
-        sl_pct = 0.0
+        # Compute percentages (use abs() for amounts, signed for display)
+        target_pct = ""
+        sl_pct = ""
         risk_amt = 0.0
         reward_amt = 0.0
         rr_ratio = 0.0
         if entry > 0:
-            target_pct = round((target - entry) / entry * 100, 1)
-            sl_pct = round((entry - sl) / entry * 100, 1)
-            risk_amt = round(entry - sl, 2)
-            reward_amt = round(target - entry, 2)
+            raw_target_pct = round(
+                (target - entry) / entry * 100, 1
+            )
+            raw_sl_pct = round(
+                (entry - sl) / entry * 100, 1
+            )
+            # Format with sign: SL always shows as loss, target as gain
+            sl_pct = f"-{abs(raw_sl_pct)}"
+            target_pct = f"+{abs(raw_target_pct)}"
+            risk_amt = round(abs(entry - sl), 2)
+            reward_amt = round(abs(target - entry), 2)
             if risk_amt > 0:
                 rr_ratio = round(reward_amt / risk_amt, 1)
 
@@ -207,6 +214,11 @@ class AlertFormatter:
             "holding_period": trading_time.get(
                 "holding_period", ""
             ),
+            "max_entry_price": self._format_price(
+                trading_time.get("max_entry_price", 0)
+            ),
+            "atr_pct": trading_time.get("atr_pct", 0),
+            "volatility": trading_time.get("volatility", "N/A"),
             "trading_description": trading_time.get(
                 "description", ""
             ),

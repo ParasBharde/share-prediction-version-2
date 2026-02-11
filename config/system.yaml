@@ -13,6 +13,9 @@ scanning:
   # Stock universe to scan
   universe: "ALL"  # Options: NIFTY50, NIFTY100, NIFTY500, ALL
 
+  # Signal type filter - only send alerts/trades for these signal types
+  signal_type_filter: "BUY"  # Options: BUY, SELL, BOTH
+
   # Scanning schedule (IST)
   schedule:
     enabled: true
