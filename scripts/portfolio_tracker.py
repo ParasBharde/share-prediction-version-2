@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -369,7 +370,16 @@ async def send_telegram_update(postgres, hits):
         from src.alerts.alert_formatter import AlertFormatter
         from src.alerts.telegram_bot import TelegramBot
 
-        telegram = TelegramBot()
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not bot_token or not chat_id:
+            print(
+                "  TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID "
+                "not set in .env"
+            )
+            return
+
+        telegram = TelegramBot(bot_token, chat_id)
         formatter = AlertFormatter()
     except Exception as e:
         print(f"  Telegram not configured: {e}")
