@@ -434,6 +434,92 @@ class AlertFormatter:
             "paper_trade_summary", context
         )
 
+    def format_portfolio_update(
+        self,
+        positions: List[Dict[str, Any]],
+        closed: List[Dict[str, Any]],
+        sl_hits: List[Dict[str, Any]],
+        target_hits: List[Dict[str, Any]],
+    ) -> str:
+        """Format a live portfolio P&L update for Telegram."""
+        lines = [
+            "PORTFOLIO UPDATE - Live P&L",
+            "",
+        ]
+
+        # Calculate totals
+        total_invested = 0
+        total_unrealized = 0
+        for p in positions:
+            entry = p.get("avg_entry_price", 0)
+            qty = p.get("quantity", 0)
+            total_invested += entry * qty
+            total_unrealized += p.get("unrealized_pnl", 0) or 0
+
+        total_realized = sum(
+            (c.get("realized_pnl", 0) or 0) for c in closed
+        )
+        overall = total_unrealized + total_realized
+
+        lines.append(
+            f"Unrealized P&L: {CURRENCY_SYMBOL}"
+            f"{total_unrealized:+,.2f}"
+        )
+        lines.append(
+            f"Realized P&L: {CURRENCY_SYMBOL}"
+            f"{total_realized:+,.2f}"
+        )
+        lines.append(
+            f"Overall P&L: {CURRENCY_SYMBOL}{overall:+,.2f}"
+        )
+        lines.append("")
+
+        # SL/Target hits
+        if sl_hits:
+            lines.append(
+                f"---- STOP LOSS HIT ({len(sl_hits)}) ----"
+            )
+            for h in sl_hits:
+                lines.append(
+                    f"  {h['symbol']}: "
+                    f"{CURRENCY_SYMBOL}{h.get('pnl', 0):+,.2f}"
+                )
+            lines.append("")
+
+        if target_hits:
+            lines.append(
+                f"---- TARGET HIT ({len(target_hits)}) ----"
+            )
+            for h in target_hits:
+                lines.append(
+                    f"  {h['symbol']}: "
+                    f"{CURRENCY_SYMBOL}{h.get('pnl', 0):+,.2f}"
+                )
+            lines.append("")
+
+        # Open positions
+        if positions:
+            lines.append(
+                f"---- OPEN POSITIONS ({len(positions)}) ----"
+            )
+            for p in positions:
+                entry = p.get("avg_entry_price", 0)
+                current = p.get("current_price", entry)
+                pnl = p.get("unrealized_pnl", 0) or 0
+                pnl_pct = (
+                    ((current - entry) / entry) * 100
+                    if entry > 0
+                    else 0
+                )
+                lines.append(
+                    f"  {p['symbol']}: "
+                    f"{CURRENCY_SYMBOL}{current:,.2f} "
+                    f"({pnl_pct:+.1f}%) "
+                    f"P&L: {CURRENCY_SYMBOL}{pnl:+,.2f}"
+                )
+
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

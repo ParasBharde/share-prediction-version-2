@@ -236,6 +236,8 @@ class Position(Base):
     realized_pnl = Column(Float, default=0.0)
     stop_loss = Column(Float, nullable=True)
     target_price = Column(Float, nullable=True)
+    exit_price = Column(Float, nullable=True)
+    exit_reason = Column(String(50), nullable=True)  # SL_HIT, TARGET_HIT, MANUAL
     strategy_name = Column(String(100), nullable=True)
     sector = Column(String(100), nullable=True)
     status = Column(String(20), nullable=False)  # OPEN, CLOSED

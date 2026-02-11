@@ -514,6 +514,57 @@ class PostgresHandler:
             )
             return []
 
+    def update_position_price(
+        self,
+        position_id: int,
+        current_price: float,
+        unrealized_pnl: float,
+    ) -> None:
+        """Update current price and unrealized P&L for a position."""
+        try:
+            with self.db.get_session() as session:
+                position = session.query(Position).get(position_id)
+                if position:
+                    position.current_price = current_price
+                    position.unrealized_pnl = unrealized_pnl
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update position {position_id}",
+                exc_info=True,
+            )
+
+    def close_position(
+        self,
+        position_id: int,
+        exit_price: float,
+        realized_pnl: float,
+        exit_reason: str = "MANUAL",
+    ) -> None:
+        """Close an open position."""
+        try:
+            with self.db.get_session() as session:
+                position = session.query(Position).get(position_id)
+                if position and position.status == "OPEN":
+                    position.status = "CLOSED"
+                    position.current_price = exit_price
+                    position.exit_price = exit_price
+                    position.realized_pnl = realized_pnl
+                    position.unrealized_pnl = 0.0
+                    position.exit_reason = exit_reason
+                    position.closed_at = datetime.now(timezone.utc)
+                    logger.info(
+                        f"Position closed: {position.symbol} "
+                        f"@ {exit_price} ({exit_reason}), "
+                        f"P&L: {realized_pnl:+.2f}"
+                    )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to close position {position_id}",
+                exc_info=True,
+            )
+
     # --- Performance Operations ---
 
     def save_performance_metric(self, metric_data: Dict) -> int:

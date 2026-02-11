@@ -419,11 +419,99 @@ trading_time:
 
 ---
 
+## Portfolio Tracker - Live P&L Dashboard
+
+This is how you **compare your paper trades against the real market**. The portfolio tracker fetches **live prices from Yahoo Finance** and shows exactly what your P&L would be.
+
+### Daily Workflow
+
+```bash
+# Step 1: Run scanner (places new paper trades)
+python scripts/daily_scan.py --force
+
+# Step 2: Update positions with live market prices + check SL/Target
+python scripts/portfolio_tracker.py --update
+
+# Step 3: View your dashboard anytime
+python scripts/portfolio_tracker.py
+```
+
+### Commands
+
+```bash
+# Show portfolio dashboard (open positions + P&L)
+python scripts/portfolio_tracker.py
+
+# Fetch LIVE prices from market and update all positions
+# Also auto-closes positions where SL or Target is hit
+python scripts/portfolio_tracker.py --update
+
+# Show all closed trades with results (SL_HIT, TARGET_HIT)
+python scripts/portfolio_tracker.py --closed
+
+# Full performance report (dashboard + closed trades + history)
+python scripts/portfolio_tracker.py --report
+```
+
+### What --update Does
+
+1. Fetches **live market price** for each open position from Yahoo Finance
+2. Calculates **unrealized P&L** = (Current Price - Entry Price) x Quantity
+3. Updates the database with latest prices
+4. **Auto-closes positions** where:
+   - **SL Hit**: Current price <= Stop Loss -> closes with loss
+   - **Target Hit**: Current price >= Target -> closes with profit
+5. Shows which positions were closed and why
+
+### Example Dashboard Output
+
+```
+======================================================================
+  PAPER TRADING PORTFOLIO DASHBOARD
+  11 Feb 2026 15:30 IST
+======================================================================
+
+  Portfolio Summary
+  ----------------------------------------
+  Total Invested:     Rs 8,09,245.00
+  Current Value:      Rs 8,23,401.00
+  Unrealized P&L:     +14,156.00 (+1.75%)
+  Realized P&L:       -3,200.00
+  Overall P&L:        +10,956.00 (+1.35%)
+  Win Rate:           66.7% (2W / 1L / 3 total)
+
+  Open Positions (5)
+  --------------------------------------------------------------------
+  Symbol          Qty     Entry    Current         P&L     P&L%       SL    Target
+  --------------------------------------------------------------------
+  ROLEXRINGS     1377    131.57    138.20    +9,126.51   +5.04%   124.31    146.09
+  GRINDWELL        83   1698.20   1715.00    +1,394.40   +0.99%  1600.00   1894.60
+  CAMPUS          391    282.50    280.10      -938.40   -0.85%   265.20    317.10
+  ...
+  --------------------------------------------------------------------
+  TOTAL                  809,245    823,401   +14,156.00
+======================================================================
+```
+
+### View Trade History
+
+```bash
+# All orders placed
+python scripts/view_trades.py --orders
+
+# All positions (open + closed)
+python scripts/view_trades.py --all
+
+# Quick summary
+python scripts/view_trades.py --summary
+```
+
+---
+
 ## Current Limitations
 
-1. **In-memory portfolio** - Portfolio state resets when the scanner restarts. For persistence, you would need database integration (tables already exist in `src/storage/models.py`)
-2. **No real-time exit monitoring** - The system scans once daily; it doesn't monitor positions intraday for SL/target hits
-3. **No broker integration** - This is pure simulation. To go live, you'd need a broker API (Zerodha Kite, Angel One, etc.)
+1. **No real-time streaming** - You must run `--update` manually to refresh prices. For continuous monitoring, you'd need a WebSocket feed.
+2. **No broker integration** - This is pure simulation. To go live, you'd need a broker API (Zerodha Kite, Angel One, etc.)
 
 ---
 
