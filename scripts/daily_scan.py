@@ -377,6 +377,21 @@ async def run_daily_scan(
             ranked = rank_signals(aggregated)
             filtered = filter_signals(ranked)
 
+            # Apply signal type filter from config
+            signal_type_filter = config.get("scanning", {}).get(
+                "signal_type_filter", "BOTH"
+            ).upper()
+            if signal_type_filter != "BOTH":
+                before_count = len(filtered)
+                filtered = [
+                    s for s in filtered
+                    if s.signal_type.value == signal_type_filter
+                ]
+                logger.info(
+                    f"Signal type filter '{signal_type_filter}': "
+                    f"{before_count} -> {len(filtered)} signals"
+                )
+
             results["signals_generated"] = len(filtered)
 
             # 8. Send alerts and place paper trades
@@ -521,36 +536,80 @@ async def run_daily_scan(
                             live = round(float(quote["close"]), 2)
                             entry = pos["avg_entry_price"]
                             qty = pos["quantity"]
-                            upnl = round(
-                                (live - entry) * qty, 2
+                            side = pos.get("side", "LONG")
+                            is_long = side in (
+                                "LONG", "BUY", "STRONG_BUY",
                             )
+
+                            # P&L depends on position direction
+                            if is_long:
+                                upnl = round(
+                                    (live - entry) * qty, 2
+                                )
+                            else:
+                                upnl = round(
+                                    (entry - live) * qty, 2
+                                )
                             postgres.update_position_price(
                                 pos["id"], live, upnl
                             )
                             sl = pos.get("stop_loss", 0)
                             tgt = pos.get("target_price", 0)
-                            if sl > 0 and live <= sl:
-                                rpnl = round(
-                                    (sl - entry) * qty, 2
-                                )
-                                postgres.close_position(
-                                    pos["id"], live, rpnl,
-                                    "SL_HIT",
-                                )
-                                sl_hits.append(
-                                    {"symbol": sym, "pnl": rpnl}
-                                )
-                            elif tgt > 0 and live >= tgt:
-                                rpnl = round(
-                                    (live - entry) * qty, 2
-                                )
-                                postgres.close_position(
-                                    pos["id"], live, rpnl,
-                                    "TARGET_HIT",
-                                )
-                                target_hits.append(
-                                    {"symbol": sym, "pnl": rpnl}
-                                )
+
+                            if is_long:
+                                # LONG: SL hit when price drops
+                                # below SL
+                                if sl > 0 and live <= sl:
+                                    rpnl = round(
+                                        (sl - entry) * qty, 2
+                                    )
+                                    postgres.close_position(
+                                        pos["id"], live, rpnl,
+                                        "SL_HIT",
+                                    )
+                                    sl_hits.append(
+                                        {"symbol": sym, "pnl": rpnl}
+                                    )
+                                # LONG: Target hit when price rises
+                                # above target
+                                elif tgt > 0 and live >= tgt:
+                                    rpnl = round(
+                                        (live - entry) * qty, 2
+                                    )
+                                    postgres.close_position(
+                                        pos["id"], live, rpnl,
+                                        "TARGET_HIT",
+                                    )
+                                    target_hits.append(
+                                        {"symbol": sym, "pnl": rpnl}
+                                    )
+                            else:
+                                # SHORT: SL hit when price rises
+                                # above SL
+                                if sl > 0 and live >= sl:
+                                    rpnl = round(
+                                        (entry - sl) * qty, 2
+                                    )
+                                    postgres.close_position(
+                                        pos["id"], live, rpnl,
+                                        "SL_HIT",
+                                    )
+                                    sl_hits.append(
+                                        {"symbol": sym, "pnl": rpnl}
+                                    )
+                                # SHORT: Target hit when price drops
+                                # below target
+                                elif tgt > 0 and live <= tgt:
+                                    rpnl = round(
+                                        (entry - live) * qty, 2
+                                    )
+                                    postgres.close_position(
+                                        pos["id"], live, rpnl,
+                                        "TARGET_HIT",
+                                    )
+                                    target_hits.append(
+                                        {"symbol": sym, "pnl": rpnl}
+                                    )
                         except Exception:
                             pass
 

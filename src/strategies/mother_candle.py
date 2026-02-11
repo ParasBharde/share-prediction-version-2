@@ -154,6 +154,12 @@ class MotherCandleStrategy(BaseStrategy):
             if (abs(entry_price - sl) / entry_price * 100) > 7.0:
                 return None
 
+            risk = abs(entry_price - sl)
+            if breakout_type == "BUY":
+                target_price = round(entry_price + (risk * 2.0), 2)
+            else:
+                target_price = round(entry_price - (risk * 2.0), 2)
+
             return TradingSignal(
                 symbol=symbol,
                 company_name=company_info.get("name", symbol),
@@ -163,7 +169,7 @@ class MotherCandleStrategy(BaseStrategy):
                 ),
                 confidence=round(weighted_score, 4),
                 entry_price=entry_price,
-                target_price=round(entry_price + (abs(entry_price - sl) * 2.0), 2),
+                target_price=target_price,
                 stop_loss=sl,
                 priority=AlertPriority.HIGH,
                 indicators_met=indicators_met,

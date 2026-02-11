@@ -53,33 +53,33 @@ class TradingSignal:
 
     @property
     def target_percent(self) -> float:
-        """Calculate target percentage from entry."""
+        """Calculate target percentage from entry (always positive)."""
         if self.entry_price <= 0:
             return 0.0
         return (
-            (self.target_price - self.entry_price)
+            abs(self.target_price - self.entry_price)
             / self.entry_price
             * 100
         )
 
     @property
     def stop_loss_percent(self) -> float:
-        """Calculate stop loss percentage from entry."""
+        """Calculate stop loss percentage from entry (always positive)."""
         if self.entry_price <= 0:
             return 0.0
         return (
-            (self.entry_price - self.stop_loss)
+            abs(self.entry_price - self.stop_loss)
             / self.entry_price
             * 100
         )
 
     @property
     def risk_reward_ratio(self) -> float:
-        """Calculate risk-reward ratio."""
-        risk = self.entry_price - self.stop_loss
+        """Calculate risk-reward ratio (works for both BUY and SELL)."""
+        risk = abs(self.entry_price - self.stop_loss)
         if risk <= 0:
             return 0.0
-        reward = self.target_price - self.entry_price
+        reward = abs(self.target_price - self.entry_price)
         return reward / risk
 
     def to_dict(self) -> Dict[str, Any]:
