@@ -38,43 +38,62 @@ logger = get_alert_logger()
 # missing or a specific template key is absent.
 _FALLBACK_TEMPLATES: Dict[str, str] = {
     "buy_signal": (
-        "*BUY Signal - {{ symbol }}*\n"
+        "{{ signal_type }} SIGNAL - {{ symbol }}\n"
         "Strategy: {{ strategy_name }}\n"
-        "Price: {{ currency }}{{ entry_price }}\n"
-        "Target: {{ currency }}{{ target_price }}\n"
-        "Stop-Loss: {{ currency }}{{ stop_loss }}\n"
-        "Confidence: {{ confidence }}%"
+        "Entry: {{ currency }}{{ entry_price }}\n"
+        "SL: {{ currency }}{{ stop_loss }} (-{{ stop_loss_pct }}%)\n"
+        "Target: {{ currency }}{{ target_price }} "
+        "(+{{ target_pct }}%)\n"
+        "R:R = 1:{{ rr_ratio }}\n"
+        "Confidence: {{ confidence }}% "
+        "({{ indicators_met }}/{{ total_indicators }})\n"
+        "{{ indicators_summary }}"
     ),
     "sell_signal": (
-        "*SELL Signal - {{ symbol }}*\n"
+        "SELL SIGNAL - {{ symbol }}\n"
         "Strategy: {{ strategy_name }}\n"
         "Exit Price: {{ currency }}{{ exit_price }}\n"
         "P&L: {{ pnl_pct }}%\n"
         "Reason: {{ reason }}"
     ),
     "daily_summary": (
-        "*Daily Summary - {{ date }}*\n"
-        "Signals: {{ signals_generated }}\n"
-        "Portfolio: {{ currency }}{{ portfolio_value }}\n"
-        "P&L: {{ daily_pnl }} ({{ daily_pnl_pct }}%)"
+        "DAILY SUMMARY - {{ date }}\n"
+        "Scanned: {{ stocks_scanned }} | "
+        "Signals: {{ signals_count }}\n"
+        "Alerts: {{ alerts_sent }}"
+        "{% if paper_trades_placed is defined and "
+        "paper_trades_placed > 0 %}"
+        " | Paper Trades: {{ paper_trades_placed }}"
+        "{% endif %}\n"
+        "Positions: {{ active_positions }} | "
+        "P&L: {{ total_pnl_pct }}%\n"
+        "{% for s in top_signals %}"
+        "{{ loop.index }}. {{ s.symbol }} {{ s.confidence }}%\n"
+        "{% endfor %}"
+        "Scan: {{ scan_duration }}s"
     ),
     "error_alert": (
-        "*ERROR ALERT*\n"
+        "ERROR ALERT\n"
         "Component: {{ component }}\n"
         "Error: {{ error_message }}\n"
         "Time: {{ timestamp }}"
     ),
     "portfolio_update": (
-        "*Portfolio Update*\n"
+        "Portfolio Update\n"
         "Value: {{ currency }}{{ portfolio_value }}\n"
         "Positions: {{ active_positions }}\n"
         "Daily P&L: {{ daily_pnl }} ({{ daily_pnl_pct }}%)"
     ),
     "paper_trade_summary": (
-        "*PAPER TRADING - Session Summary*\n"
+        "PAPER TRADES PLACED\n"
         "Portfolio: {{ currency }}{{ portfolio_value }}\n"
-        "Positions: {{ open_positions }}\n"
-        "Trades: {{ session_trades }}"
+        "Cash: {{ currency }}{{ cash_balance }}\n"
+        "Positions: {{ open_positions }} | "
+        "Return: {{ total_return_pct }}%\n"
+        "{% for t in trades %}"
+        "{{ loop.index }}. {{ t.symbol }} {{ t.side }} "
+        "x{{ t.quantity }} @ {{ currency }}{{ t.entry_price }}\n"
+        "{% endfor %}"
     ),
 }
 

@@ -200,7 +200,31 @@ class PaperTradingEngine:
                 # Calculate position size
                 entry_price = signal.get("entry_price", 0)
                 stop_loss = signal.get("stop_loss", 0)
+                target_price = signal.get("target_price", 0)
                 if entry_price <= 0 or stop_loss <= 0:
+                    continue
+
+                # Validate: entry must be above SL for BUY,
+                # below SL for SELL
+                sig_type = signal.get("signal_type", "BUY")
+                is_buy = (
+                    sig_type in ("BUY", "STRONG_BUY")
+                    if isinstance(sig_type, str)
+                    else sig_type.value in ("BUY", "STRONG_BUY")
+                )
+                if is_buy and entry_price <= stop_loss:
+                    logger.warning(
+                        f"Skipping {symbol}: entry "
+                        f"{entry_price} <= SL {stop_loss} "
+                        f"for BUY (invalid setup)"
+                    )
+                    continue
+                if not is_buy and entry_price >= stop_loss:
+                    logger.warning(
+                        f"Skipping {symbol}: entry "
+                        f"{entry_price} >= SL {stop_loss} "
+                        f"for SELL (invalid setup)"
+                    )
                     continue
 
                 quantity = self._calculate_position_size(
