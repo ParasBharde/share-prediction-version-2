@@ -241,7 +241,14 @@ class AlertFormatter:
                     detail_parts.append(f"{display_key}: {v}")
 
             detail_str = ", ".join(detail_parts)
-            lines.append(f"  [{icon}] {display_name} ({detail_str})")
+            if passed:
+                icon_emoji = "\u2705"
+            else:
+                icon_emoji = "\u274c"
+            val_str = f" `{detail_str}`" if detail_str else ""
+            lines.append(
+                f"{icon_emoji} {display_name}{val_str}"
+            )
 
         return "\n".join(lines) if lines else "  No indicators"
 

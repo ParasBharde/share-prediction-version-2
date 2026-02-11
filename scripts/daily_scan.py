@@ -464,8 +464,38 @@ async def run_daily_scan(
                     )
 
             # 8b. Place paper trades for all qualifying signals
+            #     Use live market price (not stale signal price)
             if paper_engine and paper_trade_signals:
                 try:
+                    # Fetch live prices so entry is realistic
+                    from src.data_ingestion.yahoo_fetcher import (
+                        YahooFetcher,
+                    )
+                    yahoo_live = YahooFetcher()
+                    for sig in paper_trade_signals:
+                        try:
+                            q = await yahoo_live.fetch_quote(
+                                sig["symbol"]
+                            )
+                            if q and q.get("close"):
+                                live = round(float(q["close"]), 2)
+                                old = sig.get("entry_price", 0)
+                                sig["entry_price"] = live
+                                # Recalculate target keeping
+                                # same risk:reward ratio
+                                sl = sig.get("stop_loss", 0)
+                                if sl > 0 and old > 0:
+                                    risk = abs(live - sl)
+                                    sig["target_price"] = round(
+                                        live + (risk * 2.0), 2
+                                    )
+                                logger.debug(
+                                    f"{sig['symbol']}: entry "
+                                    f"adjusted {old} -> {live}"
+                                )
+                        except Exception:
+                            pass
+
                     trade_results = paper_engine.process_signals(
                         paper_trade_signals
                     )

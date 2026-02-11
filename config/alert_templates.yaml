@@ -17,37 +17,29 @@ telegram:
 
 templates:
   buy_signal: |
-    *Paras Trading Bot:*
-    *{{ strategy_name }}*
-    {{ symbol }}{% if company_name %} ({{ company_name }}){% endif %}
+    {% if confidence >= 90 %}🟢{% elif confidence >= 70 %}🟡{% else %}🔵{% endif %} *{{ signal_type }} SIGNAL* — `{{ symbol }}`{% if company_name %} _({{ company_name }})_{% endif %}
 
-    Signal: {{ signal_type }}
-    Price: {{ currency }}{{ entry_price }}
+    📊 *Strategy:* {{ strategy_name }}
+    🎯 *Confidence:* `{{ confidence }}%` ({{ indicators_met }}/{{ total_indicators }})
 
-    ---- INDICATOR CHECKS ----
     {{ indicators_summary }}
 
-    ---- TRADE SETUP ----
-    Entry: {{ currency }}{{ entry_price }}
-    Stop Loss: {{ currency }}{{ stop_loss }} (-{{ stop_loss_pct }}%)
-    Target: {{ currency }}{{ target_price }} (+{{ target_pct }}%)
-    Risk:Reward = 1:{{ rr_ratio }}
-    Risk: {{ currency }}{{ risk_amount }}
-    Reward: {{ currency }}{{ reward_amount }}
-    {% if has_trading_time %}
-    ---- TRADING TIME ----
-    Timeframe: {{ timeframe }}
-    Entry Date: {{ entry_date }}
-    Entry Window: {{ entry_window }}
-    Signal Valid For: {{ signal_validity_days }} trading day(s)
-    Valid Until: {{ validity_expiry }}
-    Holding Period: {{ holding_period }}
-    Note: {{ trading_description }}
-    {% endif %}
-    ---- CONFIDENCE: {{ confidence }}% ----
-    Indicators: {{ indicators_met }}/{{ total_indicators }}
-    {% if strategy_count > 1 %}Strategies: {{ contributing_strategies | join(', ') }}{% endif %}
+    ━━━━━━━━━━━━━━━━━━━━
+    📍 *TRADE SETUP*
+    ━━━━━━━━━━━━━━━━━━━━
+    ▫️ Entry:      `{{ currency }}{{ entry_price }}`
+    🔴 Stop Loss:  `{{ currency }}{{ stop_loss }}` (-{{ stop_loss_pct }}%)
+    🟢 Target:     `{{ currency }}{{ target_price }}` (+{{ target_pct }}%)
 
+    ⚖️ R:R = `1:{{ rr_ratio }}` | Risk `{{ currency }}{{ risk_amount }}` → Reward `{{ currency }}{{ reward_amount }}`
+    {% if has_trading_time %}
+    🕐 *TIMING*
+    📅 Entry: {{ entry_date }} | `{{ entry_window }}`
+    ⏳ Valid: {{ signal_validity_days }} day(s) → {{ validity_expiry }}
+    📌 Hold: {{ holding_period }}
+    {% endif %}
+    {% if strategy_count > 1 %}🔗 _Strategies: {{ contributing_strategies | join(', ') }}_
+    {% endif %}
     _{{ timestamp }}_
 
   sell_signal: |
@@ -64,22 +56,19 @@ templates:
     _{{ timestamp }}_
 
   daily_summary: |
-    *DAILY SUMMARY - {{ date }}*
+    📋 *DAILY SUMMARY*
+    _{{ date }}_
 
-    Stocks Scanned: {{ stocks_scanned }}
-    Signals Generated: {{ signals_count }}
-    Alerts Sent: {{ alerts_sent }}
-    {% if paper_trades_placed is defined and paper_trades_placed > 0 %}Paper Trades Placed: {{ paper_trades_placed }}{% endif %}
+    🔍 Scanned: `{{ stocks_scanned }}` stocks
+    📡 Signals: `{{ signals_count }}` | Alerts: `{{ alerts_sent }}`{% if paper_trades_placed is defined and paper_trades_placed > 0 %}
+    📝 Paper Trades: `{{ paper_trades_placed }}`{% endif %}
 
-    Active Positions: {{ active_positions }}
-    Total P&L: {{ total_pnl_pct }}%
+    💼 Positions: `{{ active_positions }}` | P&L: `{{ total_pnl_pct }}%`
 
-    Top Signals:
-    {% for signal in top_signals %}
-    {{ loop.index }}. {{ signal.symbol }}: {{ signal.confidence }}% confidence
-    {% endfor %}
+    🏆 *Top Signals:*{% for signal in top_signals %}
+    `{{ loop.index }}.` {{ signal.symbol }} — `{{ signal.confidence }}%`{% endfor %}
 
-    _Scan Duration: {{ scan_duration }}s_
+    ⏱️ _Scan: {{ scan_duration }}s_
 
   error_alert: |
     *SYSTEM ERROR*
@@ -112,18 +101,17 @@ templates:
     _{{ timestamp }}_
 
   paper_trade_summary: |
-    *PAPER TRADING - Session Summary*
+    📝 *PAPER TRADES PLACED*
 
-    Portfolio Value: {{ currency }}{{ portfolio_value }}
-    Cash Balance: {{ currency }}{{ cash_balance }}
-    Open Positions: {{ open_positions }}
-    Total Return: {{ total_return_pct }}%
+    💰 Portfolio: `{{ currency }}{{ portfolio_value }}`
+    💵 Cash: `{{ currency }}{{ cash_balance }}`
+    📊 Positions: `{{ open_positions }}` | Return: `{{ total_return_pct }}%`
 
-    ---- TRADES PLACED ({{ session_trades }}) ----
-    {% for trade in trades %}
-    {{ loop.index }}. {{ trade.symbol }} | {{ trade.side }} | Qty: {{ trade.quantity }}
-       Entry: {{ currency }}{{ trade.entry_price }} | SL: {{ currency }}{{ trade.stop_loss }} | Target: {{ currency }}{{ trade.target_price }}
-       Strategy: {{ trade.strategy }} | Status: {{ trade.status }}
+    ━━━━━━━━━━━━━━━━━━━━
+    *TRADES ({{ session_trades }})*
+    ━━━━━━━━━━━━━━━━━━━━{% for trade in trades %}
+    `{{ loop.index }}.` *{{ trade.symbol }}* — {{ trade.side }} × {{ trade.quantity }}
+        Entry `{{ currency }}{{ trade.entry_price }}` | SL `{{ currency }}{{ trade.stop_loss }}` | TP `{{ currency }}{{ trade.target_price }}`
     {% endfor %}
 
 priority_styles:
