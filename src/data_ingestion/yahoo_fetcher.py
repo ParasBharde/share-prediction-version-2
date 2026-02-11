@@ -17,7 +17,7 @@ Fallbacks:
     Retries with exponential backoff.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import yfinance as yf
@@ -70,9 +70,11 @@ class YahooFetcher(BaseFetcher):
 
         try:
             ticker = yf.Ticker(yahoo_symbol)
+            # yfinance excludes end_date, so add 1 day to include it
+            inclusive_end = end_date + timedelta(days=1)
             df = ticker.history(
                 start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
+                end=inclusive_end.strftime("%Y-%m-%d"),
             )
 
             if df.empty:
