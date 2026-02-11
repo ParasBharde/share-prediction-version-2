@@ -16,11 +16,40 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from sqlalchemy import text
+
 from src.monitoring.logger import get_logger
 from src.storage.db_manager import DatabaseManager
 from src.storage.timescale_handler import TimescaleHandler
 
 logger = get_logger(__name__)
+
+
+def _add_missing_columns(db: DatabaseManager) -> None:
+    """Add columns that exist in the ORM model but not in the DB."""
+    alter_statements = [
+        (
+            "exit_price",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS "
+            "exit_price FLOAT",
+        ),
+        (
+            "exit_reason",
+            "ALTER TABLE positions ADD COLUMN IF NOT EXISTS "
+            "exit_reason VARCHAR(50)",
+        ),
+    ]
+    with db.engine.connect() as conn:
+        for col_name, stmt in alter_statements:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+                logger.info(f"Ensured column exists: {col_name}")
+            except Exception as e:
+                logger.debug(
+                    f"Column {col_name} check: {e}"
+                )
+                conn.rollback()
 
 
 def run_migrations(drop_existing: bool = False):
@@ -55,6 +84,10 @@ def run_migrations(drop_existing: bool = False):
     logger.info("Creating database tables...")
     db.create_tables()
     logger.info("Tables created successfully")
+
+    # Add any missing columns to existing tables
+    logger.info("Checking for missing columns...")
+    _add_missing_columns(db)
 
     # Setup TimescaleDB hypertable
     logger.info("Setting up TimescaleDB hypertable...")
