@@ -501,6 +501,87 @@ async def run_daily_scan(
                         exc_info=True,
                     )
 
+            # 8c. Update existing positions with live prices
+            try:
+                from src.storage.postgres_handler import PostgresHandler
+                from src.data_ingestion.yahoo_fetcher import YahooFetcher
+
+                postgres = PostgresHandler()
+                open_positions = postgres.get_open_positions()
+                if open_positions:
+                    yahoo = YahooFetcher()
+                    sl_hits = []
+                    target_hits = []
+                    for pos in open_positions:
+                        sym = pos["symbol"]
+                        try:
+                            quote = await yahoo.fetch_quote(sym)
+                            if not quote or not quote.get("close"):
+                                continue
+                            live = round(float(quote["close"]), 2)
+                            entry = pos["avg_entry_price"]
+                            qty = pos["quantity"]
+                            upnl = round(
+                                (live - entry) * qty, 2
+                            )
+                            postgres.update_position_price(
+                                pos["id"], live, upnl
+                            )
+                            sl = pos.get("stop_loss", 0)
+                            tgt = pos.get("target_price", 0)
+                            if sl > 0 and live <= sl:
+                                rpnl = round(
+                                    (sl - entry) * qty, 2
+                                )
+                                postgres.close_position(
+                                    pos["id"], live, rpnl,
+                                    "SL_HIT",
+                                )
+                                sl_hits.append(
+                                    {"symbol": sym, "pnl": rpnl}
+                                )
+                            elif tgt > 0 and live >= tgt:
+                                rpnl = round(
+                                    (live - entry) * qty, 2
+                                )
+                                postgres.close_position(
+                                    pos["id"], live, rpnl,
+                                    "TARGET_HIT",
+                                )
+                                target_hits.append(
+                                    {"symbol": sym, "pnl": rpnl}
+                                )
+                        except Exception:
+                            pass
+
+                    if (sl_hits or target_hits) and telegram:
+                        hits_msg = []
+                        for h in sl_hits:
+                            hits_msg.append(
+                                f"SL HIT: {h['symbol']} "
+                                f"P&L: \u20b9{h['pnl']:+,.2f}"
+                            )
+                        for h in target_hits:
+                            hits_msg.append(
+                                f"TARGET HIT: {h['symbol']} "
+                                f"P&L: \u20b9{h['pnl']:+,.2f}"
+                            )
+                        await telegram.send_alert(
+                            "POSITION EXITS\n\n"
+                            + "\n".join(hits_msg),
+                            "HIGH",
+                        )
+
+                    logger.info(
+                        f"Updated {len(open_positions)} positions, "
+                        f"{len(sl_hits)} SL hits, "
+                        f"{len(target_hits)} target hits"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Position update failed: {e}"
+                )
+
         # 9. Send daily summary
         duration = time.time() - start_time
         results["duration_seconds"] = round(duration, 2)

@@ -170,6 +170,8 @@ async def update_positions(postgres):
                 f"P&L: {fmt_rs(h['pnl'])}"
             )
 
+    return {"sl_hits": sl_hits, "target_hits": target_hits}
+
 
 def show_dashboard(postgres):
     """Display the main portfolio dashboard."""
@@ -361,6 +363,34 @@ def show_report(postgres):
         print(f"  {'─'*60}\n")
 
 
+async def send_telegram_update(postgres, hits):
+    """Send portfolio P&L update to Telegram."""
+    try:
+        from src.alerts.alert_formatter import AlertFormatter
+        from src.alerts.telegram_bot import TelegramBot
+
+        telegram = TelegramBot()
+        formatter = AlertFormatter()
+    except Exception as e:
+        print(f"  Telegram not configured: {e}")
+        return
+
+    positions = postgres.get_open_positions()
+    closed = postgres.get_all_positions(status="CLOSED", limit=50)
+    sl_hits = hits.get("sl_hits", []) if hits else []
+    target_hits = hits.get("target_hits", []) if hits else []
+
+    message = formatter.format_portfolio_update(
+        positions, closed, sl_hits, target_hits
+    )
+
+    sent = await telegram.send_alert(message, "MEDIUM")
+    if sent:
+        print("  Portfolio update sent to Telegram!")
+    else:
+        print("  Failed to send Telegram update.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Paper Trading Portfolio Tracker"
@@ -369,6 +399,11 @@ def main():
         "--update",
         action="store_true",
         help="Fetch live prices, update P&L, check SL/Target",
+    )
+    parser.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Send portfolio update to Telegram after --update",
     )
     parser.add_argument(
         "--closed",
@@ -395,7 +430,9 @@ def main():
         sys.exit(1)
 
     if args.update:
-        asyncio.run(update_positions(postgres))
+        hits = asyncio.run(update_positions(postgres))
+        if args.telegram:
+            asyncio.run(send_telegram_update(postgres, hits))
         print()
         show_dashboard(postgres)
     elif args.closed:
