@@ -442,14 +442,9 @@ class AlertFormatter:
         target_hits: List[Dict[str, Any]],
     ) -> str:
         """Format a live portfolio P&L update for Telegram."""
-        lines = [
-            "PORTFOLIO UPDATE - Live P&L",
-            "",
-        ]
-
         # Calculate totals
-        total_invested = 0
-        total_unrealized = 0
+        total_invested = 0.0
+        total_unrealized = 0.0
         for p in positions:
             entry = p.get("avg_entry_price", 0)
             qty = p.get("quantity", 0)
@@ -460,49 +455,72 @@ class AlertFormatter:
             (c.get("realized_pnl", 0) or 0) for c in closed
         )
         overall = total_unrealized + total_realized
+        overall_icon = "\U0001f7e2" if overall >= 0 else "\U0001f534"
 
-        lines.append(
-            f"Unrealized P&L: {CURRENCY_SYMBOL}"
-            f"{total_unrealized:+,.2f}"
+        winning = [
+            c for c in closed
+            if (c.get("realized_pnl", 0) or 0) > 0
+        ]
+        win_rate = (
+            (len(winning) / len(closed)) * 100
+            if closed else 0
         )
-        lines.append(
-            f"Realized P&L: {CURRENCY_SYMBOL}"
-            f"{total_realized:+,.2f}"
-        )
-        lines.append(
-            f"Overall P&L: {CURRENCY_SYMBOL}{overall:+,.2f}"
-        )
-        lines.append("")
 
-        # SL/Target hits
+        lines = [
+            "\U0001f4ca *PORTFOLIO UPDATE*",
+            "",
+            f"{overall_icon} *Overall P&L:* `{CURRENCY_SYMBOL}"
+            f"{overall:+,.2f}`",
+            f"\U0001f4b0 Unrealized: `{CURRENCY_SYMBOL}"
+            f"{total_unrealized:+,.2f}`",
+            f"\u2705 Realized: `{CURRENCY_SYMBOL}"
+            f"{total_realized:+,.2f}`",
+            f"\U0001f3af Win Rate: `{win_rate:.0f}%` "
+            f"({len(winning)}W / "
+            f"{len(closed) - len(winning)}L)",
+            "",
+        ]
+
+        # SL/Target hits (important - show first)
         if sl_hits:
             lines.append(
-                f"---- STOP LOSS HIT ({len(sl_hits)}) ----"
+                f"\U0001f6d1 *STOP LOSS HIT ({len(sl_hits)})*"
             )
             for h in sl_hits:
                 lines.append(
-                    f"  {h['symbol']}: "
-                    f"{CURRENCY_SYMBOL}{h.get('pnl', 0):+,.2f}"
+                    f"  \u274c `{h['symbol']:12s}` "
+                    f"`{CURRENCY_SYMBOL}{h.get('pnl', 0):>+10,.2f}`"
                 )
             lines.append("")
 
         if target_hits:
             lines.append(
-                f"---- TARGET HIT ({len(target_hits)}) ----"
+                f"\U0001f389 *TARGET HIT ({len(target_hits)})*"
             )
             for h in target_hits:
                 lines.append(
-                    f"  {h['symbol']}: "
-                    f"{CURRENCY_SYMBOL}{h.get('pnl', 0):+,.2f}"
+                    f"  \U0001f4b5 `{h['symbol']:12s}` "
+                    f"`{CURRENCY_SYMBOL}{h.get('pnl', 0):>+10,.2f}`"
                 )
             lines.append("")
 
-        # Open positions
+        # Open positions sorted by P&L
         if positions:
-            lines.append(
-                f"---- OPEN POSITIONS ({len(positions)}) ----"
+            sorted_pos = sorted(
+                positions,
+                key=lambda x: x.get("unrealized_pnl", 0) or 0,
+                reverse=True,
             )
-            for p in positions:
+            lines.append(
+                f"\U0001f4c8 *OPEN POSITIONS ({len(positions)})*"
+            )
+            lines.append("`\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500`")
+            for p in sorted_pos:
                 entry = p.get("avg_entry_price", 0)
                 current = p.get("current_price", entry)
                 pnl = p.get("unrealized_pnl", 0) or 0
@@ -511,12 +529,23 @@ class AlertFormatter:
                     if entry > 0
                     else 0
                 )
+                icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
                 lines.append(
-                    f"  {p['symbol']}: "
-                    f"{CURRENCY_SYMBOL}{current:,.2f} "
-                    f"({pnl_pct:+.1f}%) "
-                    f"P&L: {CURRENCY_SYMBOL}{pnl:+,.2f}"
+                    f"{icon} `{p['symbol']:12s}` "
+                    f"`{pnl_pct:>+6.1f}%` "
+                    f"`{CURRENCY_SYMBOL}{pnl:>+10,.2f}`"
                 )
+            lines.append("`\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500\u2500"
+                         "\u2500\u2500\u2500\u2500\u2500`")
+
+        now_str = datetime.now(timezone.utc).strftime(
+            "%d %b %Y, %H:%M UTC"
+        )
+        lines.append(f"\n\U0001f552 _{now_str}_")
 
         return "\n".join(lines)
 

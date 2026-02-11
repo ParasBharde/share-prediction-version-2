@@ -582,3 +582,15 @@ class PostgresHandler:
                 exc_info=True,
             )
             raise
+
+    def reset_portfolio(self) -> int:
+        """Delete all positions (open + closed). Returns count deleted."""
+        try:
+            with self.db.get_session() as session:
+                count = session.query(Position).delete()
+                logger.info(f"Portfolio reset: {count} positions deleted")
+                return count
+
+        except Exception as e:
+            logger.error("Failed to reset portfolio", exc_info=True)
+            raise
