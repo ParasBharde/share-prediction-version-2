@@ -425,6 +425,11 @@ def main():
         action="store_true",
         help="Full performance report",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Delete ALL positions and start fresh",
+    )
     args = parser.parse_args()
 
     try:
@@ -439,7 +444,17 @@ def main():
         )
         sys.exit(1)
 
-    if args.update:
+    if args.reset:
+        confirm = input(
+            "\n  This will DELETE all positions "
+            "(open + closed). Continue? [y/N]: "
+        )
+        if confirm.strip().lower() == "y":
+            count = postgres.reset_portfolio()
+            print(f"\n  Portfolio reset. {count} positions deleted.")
+        else:
+            print("  Cancelled.")
+    elif args.update:
         hits = asyncio.run(update_positions(postgres))
         if args.telegram:
             asyncio.run(send_telegram_update(postgres, hits))
