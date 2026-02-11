@@ -160,6 +160,12 @@ class MotherCandleStrategy(BaseStrategy):
             else:
                 target_price = round(entry_price - (risk * 2.0), 2)
 
+            # Calculate ATR for smart timing
+            atr_value = self._calculate_atr(df, 14)
+            atr_pct = round(
+                (atr_value / entry_price) * 100, 2
+            ) if entry_price > 0 else 0.0
+
             return TradingSignal(
                 symbol=symbol,
                 company_name=company_info.get("name", symbol),
@@ -178,6 +184,9 @@ class MotherCandleStrategy(BaseStrategy):
                 metadata={
                     "timeframe": self.timeframe,
                     "baby_count": pattern["baby_count"],
+                    "atr": round(atr_value, 2),
+                    "atr_pct": atr_pct,
+                    "breakout_level": round(breakout_level, 2),
                 },
             )
         return None

@@ -227,6 +227,31 @@ class PaperTradingEngine:
                     )
                     continue
 
+                # Gap protection: skip if executed price
+                # exceeds max entry price from timing
+                trading_time = signal.get("trading_time", {})
+                max_entry = trading_time.get(
+                    "max_entry_price", 0
+                )
+                if max_entry > 0:
+                    if is_buy and entry_price > max_entry:
+                        logger.info(
+                            f"Skipping {symbol}: entry "
+                            f"{entry_price} > max entry "
+                            f"{max_entry} (gap too large)"
+                        )
+                        continue
+                    if (
+                        not is_buy
+                        and entry_price < max_entry
+                    ):
+                        logger.info(
+                            f"Skipping {symbol}: entry "
+                            f"{entry_price} < max entry "
+                            f"{max_entry} (gap too large)"
+                        )
+                        continue
+
                 quantity = self._calculate_position_size(
                     entry_price, stop_loss
                 )
@@ -508,62 +533,122 @@ class PaperTradingEngine:
         self,
         signal: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Get trading time details for a signal.
+        """Get smart trading time details for a signal.
 
-        Determines entry window, validity period, and holding
-        period based on the strategy's timeframe configuration.
+        Calculates entry window, validity period, holding period,
+        and max entry price dynamically based on the stock's ATR
+        (volatility), signal confidence, and timeframe.
+
+        Logic:
+            - ATR% determines entry window width and holding period
+            - Confidence determines signal validity duration
+            - Max entry price prevents chasing gap-ups
+            - All values are stock-specific, not hardcoded
 
         Args:
-            signal: Signal dictionary containing at minimum
-                metadata with timeframe, or strategy_name.
+            signal: Signal dictionary with metadata containing
+                atr, atr_pct, and confidence data.
 
         Returns:
-            Dictionary with trading time details:
-                - entry_session: When to enter (e.g. next_market_open)
-                - entry_date: Specific date for entry
-                - entry_window: Start-end time for entry
-                - signal_validity: How long signal is valid
-                - validity_expiry: Exact expiry datetime
-                - holding_period: Min-max holding days
-                - description: Human-readable timing description
+            Dictionary with smart trading time details.
         """
-        # Determine timeframe from signal metadata
+        # Extract metadata from signal or individual signals
         metadata = signal.get("metadata", {})
-        timeframe = metadata.get("timeframe", "1D")
-
-        # Get individual signals to find timeframe
         individual = signal.get("individual_signals", [])
         for ind_sig in individual:
             ind_meta = ind_sig.get("metadata", {})
             if ind_meta.get("timeframe"):
-                timeframe = ind_meta["timeframe"]
+                metadata = ind_meta
                 break
 
-        # Get timeframe config
+        timeframe = metadata.get("timeframe", "1D")
+        atr_pct = metadata.get("atr_pct", 0.0)
+        atr_value = metadata.get("atr", 0.0)
+
+        # Get base timeframe config
         tf_config = self.trading_time_config.get(timeframe, {})
         if not tf_config:
-            # Default to 1D config
             tf_config = self.trading_time_config.get("1D", {})
 
         current_time = now_ist()
+
+        # --- SMART ENTRY WINDOW based on volatility (ATR%) ---
+        # High volatility = price moves fast, enter quickly
+        # Low volatility = price moves slow, wider window
+        entry_window_start = "09:15"
+        if atr_pct >= 3.0:
+            # High volatility: enter in first 30 min
+            entry_window_end = "09:45"
+            volatility_label = "High"
+        elif atr_pct >= 1.5:
+            # Medium volatility: standard first-hour window
+            entry_window_end = "10:15"
+            volatility_label = "Medium"
+        else:
+            # Low volatility: relaxed window
+            entry_window_end = "11:00"
+            volatility_label = "Low"
+
+        # --- MAX ENTRY PRICE (gap protection) ---
+        # If stock opens above this price, DON'T enter
+        # The R:R ratio would be destroyed
+        entry_price = signal.get("entry_price", 0)
+        stop_loss = signal.get("stop_loss", 0)
+        sig_type = signal.get("signal_type", "BUY")
+        is_buy = sig_type in ("BUY", "STRONG_BUY") if isinstance(
+            sig_type, str
+        ) else sig_type.value in ("BUY", "STRONG_BUY")
+
+        max_entry_price = 0.0
+        if entry_price > 0 and atr_value > 0:
+            # Allow gap up to 50% of ATR from signal entry
+            gap_buffer = atr_value * 0.5
+            if is_buy:
+                max_entry_price = round(
+                    entry_price + gap_buffer, 2
+                )
+            else:
+                max_entry_price = round(
+                    entry_price - gap_buffer, 2
+                )
+        elif entry_price > 0:
+            # Fallback: 1.5% buffer
+            if is_buy:
+                max_entry_price = round(
+                    entry_price * 1.015, 2
+                )
+            else:
+                max_entry_price = round(
+                    entry_price * 0.985, 2
+                )
+
+        # --- CONFIDENCE-BASED VALIDITY ---
+        # Higher confidence = valid longer (more reliable)
+        confidence = signal.get("confidence", 0)
+        conf_pct = (
+            confidence * 100 if confidence <= 1 else confidence
+        )
+        if conf_pct >= 90:
+            validity_days = 3
+        elif conf_pct >= 80:
+            validity_days = 2
+        else:
+            validity_days = 1
+
+        # --- ATR-BASED HOLDING PERIOD ---
+        # High ATR = fast move expected, shorter hold
+        # Low ATR = slow move, longer hold needed
+        if atr_pct >= 3.0:
+            hold_min, hold_max = 1, 10
+        elif atr_pct >= 1.5:
+            hold_min, hold_max = 3, 20
+        else:
+            hold_min, hold_max = 5, 30
+
+        # --- ENTRY DATE ---
         entry_session = tf_config.get(
             "entry_session", "next_market_open"
         )
-        entry_window_start = tf_config.get(
-            "entry_window_start", "09:15"
-        )
-        entry_window_end = tf_config.get(
-            "entry_window_end", "10:30"
-        )
-        validity_days = tf_config.get("signal_validity_days", 2)
-        hold_min = tf_config.get("holding_period_min_days", 1)
-        hold_max = tf_config.get("holding_period_max_days", 30)
-        description = tf_config.get(
-            "description",
-            f"{timeframe} timeframe signal",
-        )
-
-        # Calculate entry date
         if entry_session == "next_market_open":
             entry_date = get_next_trading_day(current_time.date())
         elif entry_session == "immediate" and is_market_open():
@@ -571,20 +656,23 @@ class PaperTradingEngine:
         else:
             entry_date = get_next_trading_day(current_time.date())
 
-        # Calculate validity expiry
+        # --- VALIDITY EXPIRY ---
         if validity_days > 0:
             expiry_date = entry_date
             remaining = validity_days - 1
             while remaining > 0:
                 expiry_date = get_next_trading_day(expiry_date)
                 remaining -= 1
-            validity_expiry = f"{expiry_date} {entry_window_end} IST"
+            validity_expiry = (
+                f"{expiry_date.strftime('%d %b %Y')}"
+                f" {entry_window_end} IST"
+            )
         else:
             validity_expiry = (
-                f"{entry_date} {entry_window_end} IST (Intraday)"
+                f"{entry_date.strftime('%d %b %Y')}"
+                f" {entry_window_end} IST (Intraday)"
             )
 
-        # Format entry date for display
         entry_date_str = entry_date.strftime("%d %b %Y (%A)")
 
         return {
@@ -599,7 +687,17 @@ class PaperTradingEngine:
             "holding_period_min": hold_min,
             "holding_period_max": hold_max,
             "holding_period": f"{hold_min}-{hold_max} trading days",
-            "description": description,
+            "max_entry_price": max_entry_price,
+            "atr_pct": atr_pct,
+            "volatility": volatility_label,
+            "description": (
+                f"{volatility_label} volatility "
+                f"(ATR {atr_pct}%) — "
+                f"Enter within {entry_window_start}-"
+                f"{entry_window_end}, "
+                f"skip if {'above' if is_buy else 'below'} "
+                f"{max_entry_price}"
+            ),
         }
 
     def get_portfolio_summary(self) -> Dict[str, Any]:

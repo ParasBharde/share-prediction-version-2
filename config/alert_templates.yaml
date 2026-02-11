@@ -35,6 +35,8 @@ templates:
     {% if has_trading_time %}
     🕐 *TIMING*
     📅 Entry: {{ entry_date }} | `{{ entry_window }}`
+    🚫 Skip if {% if signal_type in ['BUY', 'STRONG_BUY'] %}opens above{% else %}opens below{% endif %}: `{{ currency }}{{ max_entry_price }}`
+    📊 Volatility: `{{ volatility }}` (ATR {{ atr_pct }}%)
     ⏳ Valid: {{ signal_validity_days }} day(s) → {{ validity_expiry }}
     📌 Hold: {{ holding_period }}
     {% endif %}

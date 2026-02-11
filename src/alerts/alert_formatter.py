@@ -214,6 +214,11 @@ class AlertFormatter:
             "holding_period": trading_time.get(
                 "holding_period", ""
             ),
+            "max_entry_price": self._format_price(
+                trading_time.get("max_entry_price", 0)
+            ),
+            "atr_pct": trading_time.get("atr_pct", 0),
+            "volatility": trading_time.get("volatility", "N/A"),
             "trading_description": trading_time.get(
                 "description", ""
             ),
