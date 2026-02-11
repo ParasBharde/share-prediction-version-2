@@ -44,6 +44,11 @@ try:
     from src.alerts.telegram_bot import TelegramBot
 except Exception:
     TelegramBot = None
+
+try:
+    from src.paper_trading.paper_trading_engine import PaperTradingEngine
+except Exception:
+    PaperTradingEngine = None
 from src.data_ingestion.data_validator import DataValidator
 from src.data_ingestion.fallback_manager import FallbackManager
 from src.engine.ranking_engine import rank_signals
@@ -205,6 +210,23 @@ async def run_daily_scan(
                     "alerts will be logged only"
                 )
 
+        # Initialize Paper Trading Engine
+        paper_engine = None
+        if PaperTradingEngine is not None:
+            try:
+                paper_engine = PaperTradingEngine()
+                logger.info(
+                    "Paper trading engine initialized"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Paper trading engine init failed: {e}"
+                )
+        else:
+            logger.warning(
+                "Paper trading engine not available"
+            )
+
         # 5. Get stock list - THIS IS THE CRITICAL PART FOR 2700+ STOCKS
         stock_list = await _get_stock_universe(
             fallback_manager, config
@@ -357,7 +379,8 @@ async def run_daily_scan(
 
             results["signals_generated"] = len(filtered)
 
-            # 8. Send alerts
+            # 8. Send alerts and place paper trades
+            paper_trade_signals = []
             for signal in filtered:
                 try:
                     # Check deduplication
@@ -399,6 +422,19 @@ async def run_daily_scan(
                     signal_dict["individual_signals"] = (
                         signal.individual_signals
                     )
+
+                    # Add trading time info
+                    if paper_engine:
+                        trading_time = (
+                            paper_engine.get_trading_time_info(
+                                signal_dict
+                            )
+                        )
+                        signal_dict["trading_time"] = trading_time
+
+                    # Collect for paper trading
+                    paper_trade_signals.append(signal_dict)
+
                     message = alert_formatter.format_buy_signal(
                         signal_dict
                     )
@@ -427,11 +463,57 @@ async def run_daily_scan(
                         exc_info=True,
                     )
 
+            # 8b. Place paper trades for all qualifying signals
+            if paper_engine and paper_trade_signals:
+                try:
+                    trade_results = paper_engine.process_signals(
+                        paper_trade_signals
+                    )
+                    placed = [
+                        t for t in trade_results
+                        if t["status"] == "PLACED"
+                    ]
+                    results["paper_trades_placed"] = len(placed)
+                    logger.info(
+                        f"Paper trades: {len(placed)} placed "
+                        f"out of {len(paper_trade_signals)} signals"
+                    )
+
+                    # Send paper trading summary if trades were placed
+                    if placed and telegram:
+                        pt_summary = (
+                            alert_formatter.format_paper_trade_summary(
+                                paper_engine.get_portfolio_summary(),
+                                paper_engine.get_session_trades_summary(),
+                            )
+                        )
+                        await telegram.send_alert(
+                            pt_summary, "MEDIUM"
+                        )
+                    elif placed:
+                        logger.info(
+                            f"PAPER TRADES: {len(placed)} orders "
+                            f"placed successfully"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Paper trading failed: {e}",
+                        exc_info=True,
+                    )
+
         # 9. Send daily summary
         duration = time.time() - start_time
         results["duration_seconds"] = round(duration, 2)
         if results.get("status") != "interrupted":
             results["status"] = "success"
+
+        # Get paper trading portfolio state for summary
+        pt_state = {}
+        if paper_engine:
+            try:
+                pt_state = paper_engine.get_portfolio_summary()
+            except Exception:
+                pass
 
         try:
             summary_message = alert_formatter.format_daily_summary(
@@ -441,8 +523,15 @@ async def run_daily_scan(
                     "signals_count": results["signals_generated"],
                     "alerts_sent": results["alerts_sent"],
                     "scan_duration": results["duration_seconds"],
-                    "active_positions": 0,
-                    "total_pnl_pct": 0,
+                    "active_positions": pt_state.get(
+                        "open_positions", 0
+                    ),
+                    "total_pnl_pct": pt_state.get(
+                        "total_return_pct", 0
+                    ),
+                    "paper_trades_placed": results.get(
+                        "paper_trades_placed", 0
+                    ),
                     "top_signals": [
                         {
                             "symbol": s.symbol,

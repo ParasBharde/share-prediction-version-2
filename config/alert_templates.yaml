@@ -17,6 +17,7 @@ telegram:
 
 templates:
   buy_signal: |
+    *Paras Trading Bot:*
     *{{ strategy_name }}*
     {{ symbol }}{% if company_name %} ({{ company_name }}){% endif %}
 
@@ -33,7 +34,16 @@ templates:
     Risk:Reward = 1:{{ rr_ratio }}
     Risk: {{ currency }}{{ risk_amount }}
     Reward: {{ currency }}{{ reward_amount }}
-
+    {% if has_trading_time %}
+    ---- TRADING TIME ----
+    Timeframe: {{ timeframe }}
+    Entry Date: {{ entry_date }}
+    Entry Window: {{ entry_window }}
+    Signal Valid For: {{ signal_validity_days }} trading day(s)
+    Valid Until: {{ validity_expiry }}
+    Holding Period: {{ holding_period }}
+    Note: {{ trading_description }}
+    {% endif %}
     ---- CONFIDENCE: {{ confidence }}% ----
     Indicators: {{ indicators_met }}/{{ total_indicators }}
     {% if strategy_count > 1 %}Strategies: {{ contributing_strategies | join(', ') }}{% endif %}
@@ -59,6 +69,7 @@ templates:
     Stocks Scanned: {{ stocks_scanned }}
     Signals Generated: {{ signals_count }}
     Alerts Sent: {{ alerts_sent }}
+    {% if paper_trades_placed is defined and paper_trades_placed > 0 %}Paper Trades Placed: {{ paper_trades_placed }}{% endif %}
 
     Active Positions: {{ active_positions }}
     Total P&L: {{ total_pnl_pct }}%
@@ -99,6 +110,21 @@ templates:
     {% endfor %}
 
     _{{ timestamp }}_
+
+  paper_trade_summary: |
+    *PAPER TRADING - Session Summary*
+
+    Portfolio Value: {{ currency }}{{ portfolio_value }}
+    Cash Balance: {{ currency }}{{ cash_balance }}
+    Open Positions: {{ open_positions }}
+    Total Return: {{ total_return_pct }}%
+
+    ---- TRADES PLACED ({{ session_trades }}) ----
+    {% for trade in trades %}
+    {{ loop.index }}. {{ trade.symbol }} | {{ trade.side }} | Qty: {{ trade.quantity }}
+       Entry: {{ currency }}{{ trade.entry_price }} | SL: {{ currency }}{{ trade.stop_loss }} | Target: {{ currency }}{{ trade.target_price }}
+       Strategy: {{ trade.strategy }} | Status: {{ trade.status }}
+    {% endfor %}
 
 priority_styles:
   HIGH:

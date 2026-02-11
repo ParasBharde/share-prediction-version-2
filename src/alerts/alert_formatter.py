@@ -30,6 +30,8 @@ from src.monitoring.metrics import alert_sent_counter
 from src.utils.config_loader import load_config
 from src.utils.constants import CURRENCY_SYMBOL, SignalType
 
+from typing import List
+
 logger = get_alert_logger()
 
 # Default fallback templates used when config/alert_templates.yaml is
@@ -67,6 +69,12 @@ _FALLBACK_TEMPLATES: Dict[str, str] = {
         "Value: {{ currency }}{{ portfolio_value }}\n"
         "Positions: {{ active_positions }}\n"
         "Daily P&L: {{ daily_pnl }} ({{ daily_pnl_pct }}%)"
+    ),
+    "paper_trade_summary": (
+        "*PAPER TRADING - Session Summary*\n"
+        "Portfolio: {{ currency }}{{ portfolio_value }}\n"
+        "Positions: {{ open_positions }}\n"
+        "Trades: {{ session_trades }}"
     ),
 }
 
@@ -139,6 +147,10 @@ class AlertFormatter:
 
         from src.utils.time_helpers import now_ist
 
+        # Build trading time context
+        trading_time = signal.get("trading_time", {})
+        has_trading_time = bool(trading_time)
+
         context = {
             "symbol": signal.get("symbol", "UNKNOWN"),
             "company_name": company_name,
@@ -162,6 +174,23 @@ class AlertFormatter:
             "strategy_count": signal.get("strategy_count", 1),
             "currency": CURRENCY_SYMBOL,
             "timestamp": now_ist().strftime("%I:%M %p IST | %d %b %Y"),
+            # Trading time fields
+            "has_trading_time": has_trading_time,
+            "timeframe": trading_time.get("timeframe", "1D"),
+            "entry_date": trading_time.get("entry_date", ""),
+            "entry_window": trading_time.get("entry_window", ""),
+            "signal_validity_days": trading_time.get(
+                "signal_validity_days", ""
+            ),
+            "validity_expiry": trading_time.get(
+                "validity_expiry", ""
+            ),
+            "holding_period": trading_time.get(
+                "holding_period", ""
+            ),
+            "trading_description": trading_time.get(
+                "description", ""
+            ),
         }
         return self._render_template("buy_signal", context)
 
@@ -368,6 +397,42 @@ class AlertFormatter:
             ),
         }
         return self._render_template("portfolio_update", context)
+
+    def format_paper_trade_summary(
+        self,
+        portfolio: Dict[str, Any],
+        trades: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Format a paper trading session summary.
+
+        Args:
+            portfolio: Portfolio state dictionary from
+                PaperTradingEngine.get_portfolio_summary().
+            trades: List of trade records from
+                PaperTradingEngine.get_session_trades_summary().
+
+        Returns:
+            Rendered message string.
+        """
+        context = {
+            "portfolio_value": self._format_price(
+                portfolio.get("portfolio_value", 0)
+            ),
+            "cash_balance": self._format_price(
+                portfolio.get("cash_balance", 0)
+            ),
+            "open_positions": portfolio.get("open_positions", 0),
+            "total_return_pct": portfolio.get(
+                "total_return_pct", 0
+            ),
+            "session_trades": portfolio.get("session_trades", 0),
+            "trades": trades,
+            "currency": CURRENCY_SYMBOL,
+        }
+        return self._render_template(
+            "paper_trade_summary", context
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

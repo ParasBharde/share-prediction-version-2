@@ -37,6 +37,8 @@ class MeanReversionStrategy(BaseStrategy):
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.data_config = config.get("data", {})
+        self.timeframe = self.data_config.get("timeframe", "1D")
         self._scan_stats = {
             "total": 0,
             "pre_filter_rejected": 0,
@@ -210,6 +212,9 @@ class MeanReversionStrategy(BaseStrategy):
                 indicators_met=indicators_met,
                 total_indicators=total_indicators,
                 indicator_details=indicator_details,
+                metadata={
+                    "timeframe": self.timeframe,
+                },
             )
 
             logger.info(

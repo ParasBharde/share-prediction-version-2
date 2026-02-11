@@ -10,6 +10,10 @@ strategy:
   priority: 1  # Higher = checked first
   description: "Stocks breaking 52-week high with volume surge"
 
+data:
+  timeframe: "1D"
+  lookback_bars: 252
+
 # Pre-filters (applied before technical analysis)
 filters:
   market_cap_min: 1000  # Crores

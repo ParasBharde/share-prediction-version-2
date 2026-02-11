@@ -10,6 +10,10 @@ strategy:
   priority: 3
   description: "Unusual volume with price confirmation"
 
+data:
+  timeframe: "1D"
+  lookback_bars: 200
+
 filters:
   market_cap_min: 2000  # Crores
   market_cap_max: null
