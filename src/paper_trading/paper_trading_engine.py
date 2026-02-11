@@ -23,7 +23,7 @@ Logging:
 """
 
 import math
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.monitoring.logger import get_logger
@@ -235,10 +235,26 @@ class PaperTradingEngine:
                     current_price=entry_price,
                 )
 
-                # Open position if order executed
-                strategy_name = signal.get(
-                    "strategy_name", "Unknown"
-                )
+                # Resolve strategy name from signal
+                strategy_name = signal.get("strategy_name", "")
+                if not strategy_name:
+                    strategies = signal.get(
+                        "contributing_strategies", []
+                    )
+                    if strategies:
+                        strategy_name = ", ".join(strategies)
+                    else:
+                        # Try individual_signals as last resort
+                        for ind_sig in signal.get(
+                            "individual_signals", []
+                        ):
+                            sn = ind_sig.get("strategy_name", "")
+                            if sn:
+                                strategy_name = sn
+                                break
+                if not strategy_name:
+                    strategy_name = "Unknown"
+
                 sector = signal.get("sector", "Unknown")
                 position = None
 
@@ -253,9 +269,11 @@ class PaperTradingEngine:
                     "order": order_result,
                     "position": position,
                     "quantity": quantity,
-                    "entry_price": entry_price,
-                    "stop_loss": stop_loss,
-                    "target_price": signal.get("target_price", 0),
+                    "entry_price": round(entry_price, 2),
+                    "stop_loss": round(stop_loss, 2),
+                    "target_price": round(
+                        signal.get("target_price", 0), 2
+                    ),
                     "strategy": strategy_name,
                     "confidence": conf_pct,
                     "status": (
@@ -294,10 +312,11 @@ class PaperTradingEngine:
                     exc_info=True,
                 )
 
-        # Update performance tracker
+        # Update performance tracker and persist to database
         if trade_results:
             state = self.portfolio_manager.get_portfolio_state()
             self.performance_tracker.update(state)
+            self._persist_session(trade_results, state)
 
         return trade_results
 
@@ -340,6 +359,126 @@ class PaperTradingEngine:
             return 0
 
         return quantity
+
+    def _persist_session(
+        self,
+        trade_results: List[Dict[str, Any]],
+        portfolio_state: Dict[str, Any],
+    ) -> None:
+        """Persist trades and portfolio state to the database.
+
+        Saves each executed order, its position, and a daily
+        performance snapshot so trades survive across sessions.
+        """
+        try:
+            from src.storage.postgres_handler import PostgresHandler
+
+            postgres = PostgresHandler()
+        except Exception as e:
+            logger.warning(
+                f"Could not connect to database for persistence: {e}"
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+
+        for trade in trade_results:
+            if trade["status"] != "PLACED":
+                continue
+            try:
+                order = trade.get("order", {})
+                # Save order
+                order_data = {
+                    "symbol": trade["symbol"],
+                    "side": (
+                        trade["signal_type"]
+                        if isinstance(trade["signal_type"], str)
+                        else trade["signal_type"].value
+                    ),
+                    "order_type": "MARKET",
+                    "quantity": trade["quantity"],
+                    "price": trade["entry_price"],
+                    "executed_price": round(
+                        order.get("executed_price", trade["entry_price"]),
+                        2,
+                    ),
+                    "executed_quantity": trade["quantity"],
+                    "status": "EXECUTED",
+                    "slippage": round(
+                        order.get("executed_price", 0)
+                        - trade["entry_price"],
+                        4,
+                    ),
+                    "commission": order.get("commission", 0),
+                    "strategy_name": trade["strategy"],
+                    "created_at": now,
+                    "executed_at": now,
+                }
+                postgres.save_order(order_data)
+
+                # Save position
+                position_data = {
+                    "symbol": trade["symbol"],
+                    "side": "LONG" if order_data["side"] in (
+                        "BUY", "STRONG_BUY"
+                    ) else "SHORT",
+                    "quantity": trade["quantity"],
+                    "avg_entry_price": round(
+                        order.get("executed_price", trade["entry_price"]),
+                        2,
+                    ),
+                    "current_price": round(trade["entry_price"], 2),
+                    "unrealized_pnl": 0.0,
+                    "realized_pnl": 0.0,
+                    "stop_loss": trade["stop_loss"],
+                    "target_price": trade["target_price"],
+                    "strategy_name": trade["strategy"],
+                    "sector": "Unknown",
+                    "status": "OPEN",
+                    "opened_at": now,
+                }
+                postgres.save_position(position_data)
+
+                logger.debug(
+                    f"Persisted trade to DB: {trade['symbol']}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to persist trade {trade['symbol']}: {e}"
+                )
+
+        # Save daily performance snapshot
+        try:
+            perf_data = {
+                "date": now,
+                "portfolio_value": portfolio_state.get(
+                    "portfolio_value", 0
+                ),
+                "cash_balance": portfolio_state.get(
+                    "cash_balance", 0
+                ),
+                "invested_value": round(
+                    portfolio_state.get("portfolio_value", 0)
+                    - portfolio_state.get("cash_balance", 0),
+                    2,
+                ),
+                "daily_pnl": 0.0,
+                "total_pnl": portfolio_state.get(
+                    "total_realized_pnl", 0
+                ),
+                "total_return_pct": portfolio_state.get(
+                    "total_return_pct", 0
+                ),
+                "active_positions": portfolio_state.get(
+                    "open_positions_count", 0
+                ),
+            }
+            postgres.save_performance_metric(perf_data)
+            logger.info("Persisted performance snapshot to DB")
+        except Exception as e:
+            logger.warning(
+                f"Failed to persist performance metric: {e}"
+            )
 
     def get_trading_time_info(
         self,

@@ -360,6 +360,19 @@ class PostgresHandler:
 
     # --- Position Operations ---
 
+    def save_position(self, position_data: Dict) -> int:
+        """Save a paper trading position."""
+        try:
+            with self.db.get_session() as session:
+                position = Position(**position_data)
+                session.add(position)
+                session.flush()
+                return position.id
+
+        except Exception as e:
+            logger.error("Failed to save position", exc_info=True)
+            raise
+
     def get_open_positions(self) -> List[Dict]:
         """Get all open positions."""
         try:
@@ -373,6 +386,7 @@ class PostgresHandler:
                     {
                         "id": p.id,
                         "symbol": p.symbol,
+                        "side": p.side,
                         "quantity": p.quantity,
                         "avg_entry_price": p.avg_entry_price,
                         "current_price": p.current_price,
@@ -389,6 +403,113 @@ class PostgresHandler:
         except Exception as e:
             logger.error(
                 "Failed to get open positions",
+                exc_info=True,
+            )
+            return []
+
+    def get_all_positions(
+        self, status: Optional[str] = None, limit: int = 50
+    ) -> List[Dict]:
+        """Get positions with optional status filter."""
+        try:
+            with self.db.get_session() as session:
+                query = session.query(Position)
+                if status:
+                    query = query.filter(Position.status == status)
+                positions = (
+                    query.order_by(Position.opened_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+                return [
+                    {
+                        "id": p.id,
+                        "symbol": p.symbol,
+                        "side": p.side,
+                        "quantity": p.quantity,
+                        "avg_entry_price": p.avg_entry_price,
+                        "current_price": p.current_price,
+                        "unrealized_pnl": p.unrealized_pnl,
+                        "realized_pnl": p.realized_pnl,
+                        "stop_loss": p.stop_loss,
+                        "target_price": p.target_price,
+                        "strategy_name": p.strategy_name,
+                        "sector": p.sector,
+                        "status": p.status,
+                        "opened_at": p.opened_at,
+                        "closed_at": p.closed_at,
+                    }
+                    for p in positions
+                ]
+
+        except Exception as e:
+            logger.error(
+                "Failed to get positions", exc_info=True
+            )
+            return []
+
+    def get_trade_history(self, limit: int = 50) -> List[Dict]:
+        """Get recent orders (trade history)."""
+        try:
+            with self.db.get_session() as session:
+                orders = (
+                    session.query(Order)
+                    .order_by(Order.created_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+                return [
+                    {
+                        "id": o.id,
+                        "symbol": o.symbol,
+                        "side": o.side,
+                        "order_type": o.order_type,
+                        "quantity": o.quantity,
+                        "price": o.price,
+                        "executed_price": o.executed_price,
+                        "status": o.status,
+                        "slippage": o.slippage,
+                        "commission": o.commission,
+                        "strategy_name": o.strategy_name,
+                        "created_at": o.created_at,
+                    }
+                    for o in orders
+                ]
+
+        except Exception as e:
+            logger.error(
+                "Failed to get trade history", exc_info=True
+            )
+            return []
+
+    def get_performance_history(
+        self, limit: int = 30
+    ) -> List[Dict]:
+        """Get recent performance snapshots."""
+        try:
+            with self.db.get_session() as session:
+                metrics = (
+                    session.query(PerformanceMetric)
+                    .order_by(PerformanceMetric.date.desc())
+                    .limit(limit)
+                    .all()
+                )
+                return [
+                    {
+                        "date": m.date,
+                        "portfolio_value": m.portfolio_value,
+                        "cash_balance": m.cash_balance,
+                        "daily_pnl": m.daily_pnl,
+                        "total_pnl": m.total_pnl,
+                        "total_return_pct": m.total_return_pct,
+                        "active_positions": m.active_positions,
+                    }
+                    for m in metrics
+                ]
+
+        except Exception as e:
+            logger.error(
+                "Failed to get performance history",
                 exc_info=True,
             )
             return []
