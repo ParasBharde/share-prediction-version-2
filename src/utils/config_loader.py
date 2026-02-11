@@ -100,7 +100,7 @@ def load_config(
         return {}
 
     try:
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             raw_config = yaml.safe_load(f) or {}
 
         config = _interpolate_env_vars(raw_config)
