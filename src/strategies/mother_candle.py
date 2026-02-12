@@ -1,5 +1,9 @@
 """
-Mother Candle (Inside Bar) Strategy
+Mother Candle (Inside Bar) Strategy - OLD VERSION (DEPRECATED)
+
+DEPRECATED: This file is kept for backward compatibility only.
+The new strategy is in mother_candle_v2.py with pure price-action logic.
+Config is disabled in mother_candle.yaml (enabled: false).
 
 Purpose:
     Detects Mother Candle patterns where a large candle (Mother)

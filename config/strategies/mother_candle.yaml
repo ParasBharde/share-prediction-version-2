@@ -1,4 +1,5 @@
-# Mother Candle (Inside Bar) Strategy Configuration
+# Mother Candle (Inside Bar) Strategy Configuration - OLD VERSION
+# DEPRECATED: Replaced by mother_candle_v2.yaml (pure price-action logic)
 # Purpose: Detects Mother Candle patterns and breakouts
 # Author: System
 # Last Modified: 2026-02-08
@@ -6,7 +7,7 @@
 strategy:
   name: "Mother Candle"
   version: "1.0"
-  enabled: true
+  enabled: false  # DISABLED - use Mother Candle V2 instead
   mode: "daily"
   priority: 2  # Higher = checked first
   description: >
