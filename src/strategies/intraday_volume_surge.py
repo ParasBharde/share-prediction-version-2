@@ -51,7 +51,7 @@ class IntradayVolumeSurgeStrategy(BaseStrategy):
         latest = df.iloc[-1]
         entry_price = float(latest["close"])
 
-        # 1. Volume Spike (3x average on intraday)
+        # 1. Volume Spike (MANDATORY - 3x average on intraday)
         try:
             vol_r = volume_ratio(df["volume"], 20)
             current_vol_ratio = float(vol_r.iloc[-1])
@@ -62,11 +62,16 @@ class IntradayVolumeSurgeStrategy(BaseStrategy):
                 "threshold": 3.0,
                 "passed": vol_spike,
             }
-            if vol_spike:
-                indicators_met += 1
-                weighted_score += 0.35
+
+            # MANDATORY: No volume surge = no signal
+            if not vol_spike:
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.35
         except Exception as e:
             logger.debug(f"{symbol}: Volume spike error: {e}")
+            return None
 
         # 2. Price Confirmation (bullish candle, >= 0.5% gain on intraday)
         try:

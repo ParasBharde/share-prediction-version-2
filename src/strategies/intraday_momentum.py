@@ -84,13 +84,13 @@ class IntradayMomentumStrategy(BaseStrategy):
             logger.debug(f"{symbol}: Session high error: {e}")
             return None
 
-        # 2. Volume Surge (1.5x average - lowered from 2x, but mandatory > 1.0)
+        # 2. Volume Surge (MANDATORY - must be >= 1.5x average)
         try:
             vol_r = volume_ratio(df["volume"], 20)
             current_vol_ratio = float(vol_r.iloc[-1])
 
-            # HARD REJECT: Volume must be at least average
-            if current_vol_ratio < 1.0:
+            # HARD REJECT: Volume must be above average with surge
+            if current_vol_ratio < 1.2:
                 return None
 
             vol_surge = current_vol_ratio >= 1.5
@@ -105,6 +105,7 @@ class IntradayMomentumStrategy(BaseStrategy):
                 weighted_score += 0.30
         except Exception as e:
             logger.debug(f"{symbol}: Volume error: {e}")
+            return None
 
         # 3. RSI Momentum Zone (50-75)
         try:
