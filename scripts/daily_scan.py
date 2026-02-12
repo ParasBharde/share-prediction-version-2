@@ -92,12 +92,29 @@ def parse_args():
         nargs="*",
         help="Run specific strategies (space-separated names)",
     )
+    parser.add_argument(
+        "--mother-v2-only",
+        action="store_true",
+        help=(
+            "Run only Mother Candle V2 strategy. "
+            "Useful to replace standalone mother_candle_scan.py runs."
+        ),
+    )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        help=(
+            "Scan a single stock symbol only (example: RELIANCE). "
+            "Overrides configured universe for this run."
+        ),
+    )
     return parser.parse_args()
 
 
 async def run_daily_scan(
     force_run: bool = False,
     strategy_filter: Optional[List[str]] = None,
+    symbol: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute the full daily stock scanning pipeline.
@@ -105,6 +122,7 @@ async def run_daily_scan(
     Args:
         force_run: If True, skip trading day check.
         strategy_filter: Optional list of strategy names to run.
+        symbol: Optional single symbol override for this run.
 
     Returns:
         Dictionary with scan results summary.
@@ -231,6 +249,12 @@ async def run_daily_scan(
         stock_list = await _get_stock_universe(
             fallback_manager, config
         )
+
+        if symbol:
+            stock_list = [symbol.strip().upper()]
+            logger.info(
+                f"Single-symbol mode enabled: scanning only {stock_list[0]}"
+            )
 
         if not stock_list:
             logger.error("Failed to get stock list")
@@ -829,9 +853,19 @@ async def _get_stock_universe(
 
 if __name__ == "__main__":
     args = parse_args()
+    strategy_filter = args.strategies
+
+    if args.mother_v2_only:
+        strategy_filter = ["Mother Candle V2"]
+        logger.info(
+            "mother-v2-only mode enabled: "
+            "running only 'Mother Candle V2' strategy"
+        )
+
     asyncio.run(
         run_daily_scan(
             force_run=args.force,
-            strategy_filter=args.strategies,
+            strategy_filter=strategy_filter,
+            symbol=args.symbol,
         )
     )
