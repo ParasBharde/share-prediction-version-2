@@ -4,7 +4,7 @@
 strategy:
   name: "Intraday Volume Surge"
   version: "1.0"
-  enabled: true
+  enabled: false
   priority: 3
   description: "3x volume spike with price & MFI confirmation (intraday)"
 

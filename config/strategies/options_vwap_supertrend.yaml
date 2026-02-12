@@ -4,7 +4,7 @@
 strategy:
   name: "Options VWAP Supertrend"
   version: "1.0"
-  enabled: true
+  enabled: false
   priority: 1
   description: "VWAP bias + Supertrend entry for options"
 
