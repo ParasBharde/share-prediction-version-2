@@ -29,6 +29,12 @@ from src.strategies.momentum_breakout import (
 )
 from src.strategies.mother_candle import MotherCandleStrategy
 from src.strategies.volume_surge import VolumeSurgeStrategy
+from src.strategies.intraday_momentum import IntradayMomentumStrategy
+from src.strategies.intraday_volume_surge import IntradayVolumeSurgeStrategy
+from src.strategies.intraday_mean_reversion import IntradayMeanReversionStrategy
+from src.strategies.options_oi_breakout import OptionsOIBreakoutStrategy
+from src.strategies.options_vwap_supertrend import OptionsVWAPSupertrendStrategy
+from src.strategies.options_pcr_sentiment import OptionsPCRStrategy
 from src.utils.config_loader import load_strategy_config
 from src.utils.validators import validate_strategy_config
 
@@ -40,6 +46,12 @@ STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "Mean Reversion": MeanReversionStrategy,
     "Volume Surge": VolumeSurgeStrategy,
     "Mother Candle": MotherCandleStrategy,
+    "Intraday Momentum": IntradayMomentumStrategy,
+    "Intraday Volume Surge": IntradayVolumeSurgeStrategy,
+    "Intraday Mean Reversion": IntradayMeanReversionStrategy,
+    "Options OI Breakout": OptionsOIBreakoutStrategy,
+    "Options VWAP Supertrend": OptionsVWAPSupertrendStrategy,
+    "Options PCR Sentiment": OptionsPCRStrategy,
 }
 
 # Config directory

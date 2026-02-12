@@ -6,7 +6,7 @@
 strategy:
   name: "Momentum Breakout"
   version: "1.0"
-  enabled: false
+  enabled: true
   priority: 1  # Higher = checked first
   description: "Stocks breaking 52-week high with volume surge"
 

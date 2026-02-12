@@ -1,0 +1,57 @@
+# Options VWAP + Supertrend Strategy Configuration
+# Directional intraday strategy for index options
+
+strategy:
+  name: "Options VWAP Supertrend"
+  version: "1.0"
+  enabled: true
+  priority: 1
+  description: "VWAP bias + Supertrend entry for options"
+
+data:
+  timeframe: "5m"
+  lookback_bars: 50
+
+filters:
+  market_cap_min: 0
+  price_min: 0
+  price_max: 100000
+
+indicators:
+  - name: "VWAP Direction"
+    type: "price_comparison"
+    weight: 0.25
+
+  - name: "Supertrend Signal"
+    type: "trend"
+    weight: 0.30
+
+  - name: "Volume Confirmation"
+    type: "volume_analysis"
+    weight: 0.15
+
+  - name: "RSI Momentum"
+    type: "oscillator"
+    weight: 0.15
+
+  - name: "EMA 9 Direction"
+    type: "trend"
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.55
+  signal_type: "BOTH"
+
+risk_management:
+  stop_loss:
+    type: "atr_based"
+    multiplier: 1.5
+    max_percent: 2.0
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+
+alerts:
+  enabled: true
+  priority: "HIGH"

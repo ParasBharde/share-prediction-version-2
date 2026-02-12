@@ -54,6 +54,7 @@ class YahooFetcher(BaseFetcher):
         symbol: str,
         start_date: datetime,
         end_date: datetime,
+        interval: str = "1d",
     ) -> Optional[Dict[str, Any]]:
         """
         Fetch historical OHLCV data from Yahoo Finance.
@@ -62,6 +63,7 @@ class YahooFetcher(BaseFetcher):
             symbol: NSE stock symbol.
             start_date: Start date.
             end_date: End date.
+            interval: Data interval (1m, 5m, 15m, 30m, 1h, 1d).
 
         Returns:
             Dictionary with OHLCV data or None.
@@ -70,12 +72,28 @@ class YahooFetcher(BaseFetcher):
 
         try:
             ticker = yf.Ticker(yahoo_symbol)
-            # yfinance excludes end_date, so add 1 day to include it
-            inclusive_end = end_date + timedelta(days=1)
-            df = ticker.history(
-                start=start_date.strftime("%Y-%m-%d"),
-                end=inclusive_end.strftime("%Y-%m-%d"),
-            )
+
+            # For intraday intervals, use period-based fetching
+            # (yfinance has date-range limits for intraday)
+            if interval in ("1m", "5m", "15m", "30m", "1h"):
+                period_map = {
+                    "1m": "7d",
+                    "5m": "60d",
+                    "15m": "60d",
+                    "30m": "60d",
+                    "1h": "730d",
+                }
+                df = ticker.history(
+                    period=period_map[interval],
+                    interval=interval,
+                )
+            else:
+                # yfinance excludes end_date, so add 1 day to include it
+                inclusive_end = end_date + timedelta(days=1)
+                df = ticker.history(
+                    start=start_date.strftime("%Y-%m-%d"),
+                    end=inclusive_end.strftime("%Y-%m-%d"),
+                )
 
             if df.empty:
                 logger.warning(

@@ -38,6 +38,14 @@ DEFAULT_STRATEGY_WEIGHTS: Dict[str, float] = {
     "Momentum Breakout": 0.35,
     "Volume Surge": 0.35,
     "Mean Reversion": 0.30,
+    # Intraday strategies
+    "Intraday Momentum": 0.35,
+    "Intraday Volume Surge": 0.35,
+    "Intraday Mean Reversion": 0.30,
+    # Options strategies
+    "Options OI Breakout": 0.40,
+    "Options VWAP Supertrend": 0.35,
+    "Options PCR Sentiment": 0.30,
 }
 
 
