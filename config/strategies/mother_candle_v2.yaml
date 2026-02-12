@@ -1,0 +1,89 @@
+# Mother Candle Breakout V2 - Pure Price Action Strategy
+# Purpose: Fresh breakout above Mother Candle after 3-14 day consolidation
+# Author: System
+# Last Modified: 2026-02-12
+
+strategy:
+  name: "Mother Candle V2"
+  version: "2.0"
+  enabled: true
+  mode: "daily"
+  priority: 5  # Highest priority - best strategy
+  description: >
+    Pure price-action Mother Candle strategy. Finds a large candle (Mother)
+    that contains 3-14 subsequent baby candles strictly inside its range.
+    Triggers ONLY when today's candle is the FIRST to break above Mother High.
+    Volume confirmed on both Mother (1.5x) and breakout (1.2x) candles.
+  params:
+    max_lookback: 15          # Search up to 15 candles back for Mother
+    min_baby_candles: 3       # Minimum baby candles required
+    mother_range_multiplier: 1.5  # Mother range must be 1.5x avg of prev 5
+    momentum_filters_enabled: false  # Set true to add RSI/ADX/EMA filters
+
+data:
+  timeframe: "1D"
+  lookback_bars: 200
+
+filters:
+  market_cap_min: 500   # Crores
+  market_cap_max: null
+  avg_volume_min: 200000
+  price_min: 30
+  price_max: 10000
+
+indicators:
+  - name: "Mother Candle Pattern"
+    type: "price_pattern"
+    params:
+      min_babies: 3
+      max_lookback: 15
+    weight: 0.35
+
+  - name: "Fresh Breakout"
+    type: "price_pattern"
+    params:
+      condition: "last_close > mother_high AND no prior close > mother_high"
+    weight: 0.25
+
+  - name: "Mother Volume"
+    type: "volume_analysis"
+    params:
+      condition: "mother_volume >= avg_vol_10 * 1.5"
+    weight: 0.20
+
+  - name: "Breakout Volume"
+    type: "volume_analysis"
+    params:
+      condition: "breakout_volume >= avg_vol_20 * 1.2"
+    weight: 0.20
+
+signal_generation:
+  min_conditions_met: 4  # All 4 must pass (pattern + fresh + 2 volumes)
+  confidence_threshold: 0.70
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "pattern_based"  # SL at Mother Candle Low
+    max_percent: 7.0
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2026-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.50
+  min_sharpe_ratio: 1.2
+  max_drawdown: 20
+
+alerts:
+  enabled: true
+  priority: "HIGH"

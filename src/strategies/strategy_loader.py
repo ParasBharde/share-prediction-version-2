@@ -35,6 +35,7 @@ from src.strategies.intraday_mean_reversion import IntradayMeanReversionStrategy
 from src.strategies.options_oi_breakout import OptionsOIBreakoutStrategy
 from src.strategies.options_vwap_supertrend import OptionsVWAPSupertrendStrategy
 from src.strategies.options_pcr_sentiment import OptionsPCRStrategy
+from src.strategies.mother_candle_v2 import MotherCandleV2Strategy
 from src.utils.config_loader import load_strategy_config
 from src.utils.validators import validate_strategy_config
 
@@ -52,6 +53,7 @@ STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "Options OI Breakout": OptionsOIBreakoutStrategy,
     "Options VWAP Supertrend": OptionsVWAPSupertrendStrategy,
     "Options PCR Sentiment": OptionsPCRStrategy,
+    "Mother Candle V2": MotherCandleV2Strategy,
 }
 
 # Config directory
