@@ -93,6 +93,51 @@ def vwap(
     return cum_tp_vol / cum_vol.replace(0, np.nan)
 
 
+def session_vwap(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+) -> pd.Series:
+    """
+    Session VWAP that resets at the start of each trading day.
+
+    For intraday data with DatetimeIndex, groups by date and
+    calculates VWAP per session. For daily data, falls back
+    to cumulative VWAP.
+
+    Args:
+        high: High price series.
+        low: Low price series.
+        close: Close price series.
+        volume: Volume series.
+
+    Returns:
+        Session VWAP series (resets daily).
+    """
+    typical_price = (high + low + close) / 3
+
+    # Check if index is datetime with intraday resolution
+    if hasattr(high.index, 'date'):
+        dates = high.index.date
+        result = pd.Series(np.nan, index=high.index)
+
+        for date in pd.unique(dates):
+            mask = dates == date
+            tp_day = typical_price[mask]
+            vol_day = volume[mask]
+            cum_tp_vol = (tp_day * vol_day).cumsum()
+            cum_vol = vol_day.cumsum()
+            result[mask] = cum_tp_vol / cum_vol.replace(0, np.nan)
+
+        return result
+    else:
+        # Fallback to cumulative VWAP
+        cum_tp_vol = (typical_price * volume).cumsum()
+        cum_vol = volume.cumsum()
+        return cum_tp_vol / cum_vol.replace(0, np.nan)
+
+
 def mfi(
     high: pd.Series,
     low: pd.Series,
