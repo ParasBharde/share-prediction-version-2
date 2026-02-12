@@ -27,7 +27,6 @@ from src.strategies.mean_reversion import MeanReversionStrategy
 from src.strategies.momentum_breakout import (
     MomentumBreakoutStrategy,
 )
-from src.strategies.mother_candle import MotherCandleStrategy
 from src.strategies.volume_surge import VolumeSurgeStrategy
 from src.strategies.intraday_momentum import IntradayMomentumStrategy
 from src.strategies.intraday_volume_surge import IntradayVolumeSurgeStrategy
@@ -46,7 +45,6 @@ STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "Momentum Breakout": MomentumBreakoutStrategy,
     "Mean Reversion": MeanReversionStrategy,
     "Volume Surge": VolumeSurgeStrategy,
-    "Mother Candle": MotherCandleStrategy,
     "Intraday Momentum": IntradayMomentumStrategy,
     "Intraday Volume Surge": IntradayVolumeSurgeStrategy,
     "Intraday Mean Reversion": IntradayMeanReversionStrategy,
