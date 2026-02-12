@@ -5,6 +5,7 @@ strategy:
   name: "Intraday Momentum"
   version: "1.0"
   enabled: true
+  mode: "intraday"
   priority: 1
   description: "Session high breakout with volume surge (intraday)"
 

@@ -5,6 +5,7 @@ strategy:
   name: "Options PCR Sentiment"
   version: "1.0"
   enabled: true
+  mode: "options"
   priority: 2
   description: "Put-Call Ratio sentiment analysis for options"
 

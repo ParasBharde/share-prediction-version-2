@@ -1,20 +1,20 @@
 """
-Volume Surge Strategy
+Volume Surge Strategy (V2 - Strict)
 
 Purpose:
     Identifies unusual volume activity signaling institutional interest.
     Targets stocks with 3x+ volume and price confirmation.
 
+HARD REJECTS:
+    - Volume 3x average is MANDATORY (no signal without massive volume)
+    - Price must be bullish (close > open) MANDATORY
+    - Trend must be up (EMA 20 > EMA 50) MANDATORY
+    - R:R must be >= 1.5:1
+    - RSI > 80 = overbought, reject
+
 Dependencies:
     - base_strategy for interface
     - indicators for technical calculations
-
-Logging:
-    - Each stock scan at DEBUG
-    - Signal generation at INFO
-
-Fallbacks:
-    If individual indicator fails, it is skipped.
 """
 
 from typing import Any, Dict, Optional
@@ -24,6 +24,7 @@ import pandas as pd
 from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
 from src.strategies.indicators.moving_averages import ema
+from src.strategies.indicators.oscillators import rsi
 from src.strategies.indicators.volume_indicators import (
     volume_ratio,
     vwap,
@@ -59,17 +60,6 @@ class VolumeSurgeStrategy(BaseStrategy):
         df: pd.DataFrame,
         company_info: Dict[str, Any],
     ) -> Optional[TradingSignal]:
-        """
-        Scan for volume surge signals.
-
-        Args:
-            symbol: Stock symbol.
-            df: OHLCV DataFrame.
-            company_info: Company metadata.
-
-        Returns:
-            TradingSignal if volume surge detected.
-        """
         self._scan_stats["total"] += 1
 
         if not self.apply_pre_filters(company_info):
@@ -81,14 +71,15 @@ class VolumeSurgeStrategy(BaseStrategy):
             return None
 
         indicators_met = 0
-        total_indicators = len(self.indicators_config)
         weighted_score = 0.0
         indicator_details = {}
 
         latest = df.iloc[-1]
         entry_price = float(latest["close"])
 
-        # 1. Volume Spike (3x average)
+        # ============================================================
+        # MANDATORY 1: Volume Spike >= 3x average
+        # ============================================================
         try:
             vol_r = volume_ratio(df["volume"], 20)
             current_vol_ratio = float(vol_r.iloc[-1])
@@ -100,13 +91,19 @@ class VolumeSurgeStrategy(BaseStrategy):
                 "passed": vol_spike,
             }
 
-            if vol_spike:
-                indicators_met += 1
-                weighted_score += 0.35
+            if not vol_spike:
+                self._scan_stats["no_pattern"] += 1
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.30
         except Exception as e:
             logger.debug(f"{symbol}: Volume spike error: {e}")
+            return None
 
-        # 2. Price Confirmation (bullish candle, >=2% gain)
+        # ============================================================
+        # MANDATORY 2: Price Confirmation (bullish candle, >= 1.5% gain)
+        # ============================================================
         try:
             open_price = float(latest["open"])
             price_gain_pct = (
@@ -115,63 +112,31 @@ class VolumeSurgeStrategy(BaseStrategy):
                 else 0
             )
             price_confirmed = (
-                entry_price > open_price and price_gain_pct >= 2
+                entry_price > open_price and price_gain_pct >= 1.5
             )
 
             indicator_details["price_confirmation"] = {
-                "open": open_price,
+                "open": round(open_price, 2),
                 "close": entry_price,
                 "gain_pct": round(price_gain_pct, 2),
                 "passed": price_confirmed,
             }
 
-            if price_confirmed:
-                indicators_met += 1
-                weighted_score += 0.25
+            if not price_confirmed:
+                self._scan_stats["no_pattern"] += 1
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.25
         except Exception as e:
             logger.debug(
                 f"{symbol}: Price confirmation error: {e}"
             )
+            return None
 
-        # 3. High Delivery Percentage (>=60%)
-        try:
-            delivery_pct = latest.get("delivery_percent", 0) or 0
-            delivery_pct = float(delivery_pct)
-            high_delivery = delivery_pct >= 60
-
-            indicator_details["delivery_percent"] = {
-                "value": round(delivery_pct, 2),
-                "threshold": 60,
-                "passed": high_delivery,
-            }
-
-            if high_delivery:
-                indicators_met += 1
-                weighted_score += 0.20
-        except Exception as e:
-            logger.debug(f"{symbol}: Delivery % error: {e}")
-
-        # 4. Above VWAP
-        try:
-            vwap_values = vwap(
-                df["high"], df["low"], df["close"], df["volume"]
-            )
-            current_vwap = float(vwap_values.iloc[-1])
-            above_vwap = entry_price >= current_vwap
-
-            indicator_details["vwap"] = {
-                "vwap": round(current_vwap, 2),
-                "price": entry_price,
-                "passed": above_vwap,
-            }
-
-            if above_vwap:
-                indicators_met += 1
-                weighted_score += 0.10
-        except Exception as e:
-            logger.debug(f"{symbol}: VWAP error: {e}")
-
-        # 5. Trend Direction (EMA 20 > EMA 50)
+        # ============================================================
+        # MANDATORY 3: Trend Up (EMA 20 > EMA 50)
+        # ============================================================
         try:
             ema_20 = float(ema(df["close"], 20).iloc[-1])
             ema_50 = float(ema(df["close"], 50).iloc[-1])
@@ -183,18 +148,75 @@ class VolumeSurgeStrategy(BaseStrategy):
                 "passed": trend_up,
             }
 
-            if trend_up:
-                indicators_met += 1
-                weighted_score += 0.10
+            if not trend_up:
+                self._scan_stats["no_pattern"] += 1
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.15
         except Exception as e:
             logger.debug(f"{symbol}: Trend error: {e}")
+            return None
 
-        # Check signal criteria
+        # ============================================================
+        # OPTIONAL 4: RSI Momentum (50-75, reject if > 80)
+        # ============================================================
+        try:
+            rsi_values = rsi(df["close"], 14)
+            current_rsi = float(rsi_values.iloc[-1])
+            rsi_ok = 50 <= current_rsi <= 75
+
+            indicator_details["rsi"] = {
+                "value": round(current_rsi, 2),
+                "range": "50-75",
+                "passed": rsi_ok,
+            }
+
+            # Hard reject overbought
+            if current_rsi > 80:
+                return None
+
+            if rsi_ok:
+                indicators_met += 1
+                weighted_score += 0.15
+        except Exception as e:
+            logger.debug(f"{symbol}: RSI error: {e}")
+
+        # ============================================================
+        # OPTIONAL 5: Close near day's high (strong close)
+        # Within top 25% of day's range = buyers in control
+        # ============================================================
+        try:
+            day_high = float(latest["high"])
+            day_low = float(latest["low"])
+            day_range = day_high - day_low
+            if day_range > 0:
+                close_position = (entry_price - day_low) / day_range
+                strong_close = close_position >= 0.75
+            else:
+                strong_close = False
+
+            indicator_details["close_strength"] = {
+                "close_in_range": round(close_position, 2) if day_range > 0 else 0,
+                "threshold": 0.75,
+                "passed": strong_close,
+            }
+
+            if strong_close:
+                indicators_met += 1
+                weighted_score += 0.15
+        except Exception as e:
+            logger.debug(f"{symbol}: Close strength error: {e}")
+
+        # ============================================================
+        # Signal Generation
+        # 3 mandatory + need 1 optional = min 4
+        # ============================================================
         min_conditions = self.signal_config.get(
-            "min_conditions_met", 3
+            "min_conditions_met", 4
         )
         confidence_threshold = self.signal_config.get(
-            "confidence_threshold", 0.65
+            "confidence_threshold", 0.70
         )
 
         if (
@@ -205,6 +227,13 @@ class VolumeSurgeStrategy(BaseStrategy):
             target = self.calculate_target(
                 entry_price, stop_loss, df
             )
+
+            # R:R floor check
+            risk = abs(entry_price - stop_loss)
+            reward = abs(target - entry_price)
+            if risk <= 0 or reward / risk < 1.5:
+                self._scan_stats["low_confidence"] += 1
+                return None
 
             signal = TradingSignal(
                 symbol=symbol,
@@ -217,13 +246,12 @@ class VolumeSurgeStrategy(BaseStrategy):
                 stop_loss=round(stop_loss, 2),
                 priority=AlertPriority.HIGH,
                 indicators_met=indicators_met,
-                total_indicators=total_indicators,
+                total_indicators=5,
                 indicator_details=indicator_details,
                 metadata={
                     "timeframe": self.timeframe,
-                    "volume_surge": current_vol_ratio
-                    if "current_vol_ratio" in dir()
-                    else 0,
+                    "mode": "daily",
+                    "volume_ratio": round(current_vol_ratio, 2),
                 },
             )
 
@@ -238,11 +266,6 @@ class VolumeSurgeStrategy(BaseStrategy):
 
         if indicators_met > 0:
             self._scan_stats["low_confidence"] += 1
-            logger.info(
-                f"{symbol}: {self.name} - "
-                f"{indicators_met}/{min_conditions} indicators met "
-                f"(score={weighted_score:.2f}/{confidence_threshold})"
-            )
         else:
             self._scan_stats["no_pattern"] += 1
         return None

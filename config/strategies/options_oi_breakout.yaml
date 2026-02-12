@@ -5,6 +5,7 @@ strategy:
   name: "Options OI Breakout"
   version: "1.0"
   enabled: true
+  mode: "options"
   priority: 1
   description: "OI support/resistance breakout for options trading"
 

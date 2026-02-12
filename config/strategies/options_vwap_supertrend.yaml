@@ -5,6 +5,7 @@ strategy:
   name: "Options VWAP Supertrend"
   version: "1.0"
   enabled: true
+  mode: "options"
   priority: 1
   description: "VWAP bias + Supertrend entry for options"
 
@@ -36,7 +37,7 @@ indicators:
 
   - name: "EMA 9 Direction"
     type: "trend"
-    weight: 0.10
+    weight: 0.15
 
 signal_generation:
   min_conditions_met: 3
