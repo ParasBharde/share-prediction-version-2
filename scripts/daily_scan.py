@@ -144,9 +144,9 @@ async def run_daily_scan(
         # 1. Load configuration
         config = load_config("system")
 
-        # 2. Load strategies
+        # 2. Load DAILY strategies only (not intraday/options)
         strategy_loader = StrategyLoader()
-        strategies = strategy_loader.load_all()
+        strategies = strategy_loader.load_by_mode("daily")
 
         if not strategies:
             logger.warning("No strategies loaded, aborting scan")

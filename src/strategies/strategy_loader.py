@@ -68,9 +68,15 @@ class StrategyLoader:
         self.strategies: Dict[str, BaseStrategy] = {}
         self._loaded = False
 
-    def load_all(self) -> List[BaseStrategy]:
+    def load_all(
+        self, mode: Optional[str] = None
+    ) -> List[BaseStrategy]:
         """
-        Load all enabled strategies from config files.
+        Load enabled strategies from config files.
+
+        Args:
+            mode: Filter by mode ("daily", "intraday", "options").
+                  If None, loads ALL enabled strategies.
 
         Returns:
             List of initialized strategy instances.
@@ -92,7 +98,7 @@ class StrategyLoader:
                 continue
 
             try:
-                self._load_strategy(filepath)
+                self._load_strategy(filepath, mode=mode)
             except Exception as e:
                 logger.error(
                     f"Failed to load strategy from "
@@ -108,19 +114,37 @@ class StrategyLoader:
             key=lambda s: s.priority, reverse=True
         )
 
+        mode_label = f" (mode={mode})" if mode else ""
         logger.info(
-            f"Loaded {len(loaded)} strategies: "
+            f"Loaded {len(loaded)} strategies{mode_label}: "
             f"{[s.name for s in loaded]}"
         )
 
         return loaded
 
-    def _load_strategy(self, filepath: Path) -> None:
+    def load_by_mode(
+        self, mode: str
+    ) -> List[BaseStrategy]:
+        """
+        Load only strategies matching a specific mode.
+
+        Args:
+            mode: "daily", "intraday", or "options"
+
+        Returns:
+            List of strategy instances for the given mode.
+        """
+        return self.load_all(mode=mode)
+
+    def _load_strategy(
+        self, filepath: Path, mode: Optional[str] = None
+    ) -> None:
         """
         Load a single strategy from YAML config.
 
         Args:
             filepath: Path to strategy YAML file.
+            mode: If set, only load if strategy mode matches.
         """
         config = load_strategy_config(filepath.stem)
 
@@ -149,6 +173,18 @@ class StrategyLoader:
                 f"Strategy disabled: {strategy_name}"
             )
             return
+
+        # Filter by mode if specified
+        if mode is not None:
+            strategy_mode = config.get("strategy", {}).get(
+                "mode", "daily"
+            )
+            if strategy_mode != mode:
+                logger.debug(
+                    f"Skipping {strategy_name} "
+                    f"(mode={strategy_mode}, want={mode})"
+                )
+                return
 
         # Find matching implementation class
         strategy_class = STRATEGY_REGISTRY.get(strategy_name)
