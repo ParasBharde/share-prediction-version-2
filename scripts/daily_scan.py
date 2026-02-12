@@ -92,6 +92,14 @@ def parse_args():
         nargs="*",
         help="Run specific strategies (space-separated names)",
     )
+    parser.add_argument(
+        "--mother-v2-only",
+        action="store_true",
+        help=(
+            "Run only Mother Candle V2 strategy. "
+            "Useful to replace standalone mother_candle_scan.py runs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -829,9 +837,18 @@ async def _get_stock_universe(
 
 if __name__ == "__main__":
     args = parse_args()
+    strategy_filter = args.strategies
+
+    if args.mother_v2_only:
+        strategy_filter = ["Mother Candle V2"]
+        logger.info(
+            "mother-v2-only mode enabled: "
+            "running only 'Mother Candle V2' strategy"
+        )
+
     asyncio.run(
         run_daily_scan(
             force_run=args.force,
-            strategy_filter=args.strategies,
+            strategy_filter=strategy_filter,
         )
     )
