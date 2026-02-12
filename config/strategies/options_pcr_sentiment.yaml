@@ -1,0 +1,57 @@
+# Options PCR Sentiment Strategy Configuration
+# PCR-based market sentiment for directional options trades
+
+strategy:
+  name: "Options PCR Sentiment"
+  version: "1.0"
+  enabled: true
+  priority: 2
+  description: "Put-Call Ratio sentiment analysis for options"
+
+data:
+  timeframe: "5m"
+  lookback_bars: 50
+
+filters:
+  market_cap_min: 0
+  price_min: 0
+  price_max: 100000
+
+indicators:
+  - name: "PCR Sentiment"
+    type: "options"
+    weight: 0.30
+
+  - name: "OI Levels"
+    type: "options"
+    weight: 0.20
+
+  - name: "VWAP Alignment"
+    type: "price_comparison"
+    weight: 0.20
+
+  - name: "EMA Trend"
+    type: "trend"
+    weight: 0.15
+
+  - name: "RSI Confirmation"
+    type: "oscillator"
+    weight: 0.15
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.55
+  signal_type: "BOTH"
+
+risk_management:
+  stop_loss:
+    type: "atr_based"
+    multiplier: 1.5
+    max_percent: 2.0
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+
+alerts:
+  enabled: true
+  priority: "HIGH"

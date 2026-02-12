@@ -173,6 +173,66 @@ def cci(
     return (typical_price - sma_tp) / (0.015 * mean_dev)
 
 
+def supertrend(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> pd.DataFrame:
+    """
+    Supertrend indicator.
+
+    Args:
+        high: High price series.
+        low: Low price series.
+        close: Close price series.
+        period: ATR lookback period.
+        multiplier: ATR multiplier for bands.
+
+    Returns:
+        DataFrame with supertrend, direction (+1 bullish, -1 bearish).
+    """
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(span=period, adjust=False).mean()
+
+    hl2 = (high + low) / 2
+    upper_band = hl2 + (multiplier * atr)
+    lower_band = hl2 - (multiplier * atr)
+
+    supertrend_val = pd.Series(np.nan, index=close.index)
+    direction = pd.Series(1, index=close.index)
+
+    for i in range(1, len(close)):
+        if close.iloc[i] > upper_band.iloc[i - 1]:
+            direction.iloc[i] = 1
+        elif close.iloc[i] < lower_band.iloc[i - 1]:
+            direction.iloc[i] = -1
+        else:
+            direction.iloc[i] = direction.iloc[i - 1]
+            if direction.iloc[i] == 1 and lower_band.iloc[i] < lower_band.iloc[i - 1]:
+                lower_band.iloc[i] = lower_band.iloc[i - 1]
+            if direction.iloc[i] == -1 and upper_band.iloc[i] > upper_band.iloc[i - 1]:
+                upper_band.iloc[i] = upper_band.iloc[i - 1]
+
+        supertrend_val.iloc[i] = (
+            lower_band.iloc[i] if direction.iloc[i] == 1
+            else upper_band.iloc[i]
+        )
+
+    return pd.DataFrame(
+        {
+            "supertrend": supertrend_val,
+            "direction": direction,
+            "upper_band": upper_band,
+            "lower_band": lower_band,
+        }
+    )
+
+
 def adx(
     high: pd.Series,
     low: pd.Series,

@@ -1,0 +1,62 @@
+# Intraday Volume Surge Strategy Configuration
+# Adapted from daily Volume Surge for 5m/15m timeframes
+
+strategy:
+  name: "Intraday Volume Surge"
+  version: "1.0"
+  enabled: true
+  priority: 3
+  description: "3x volume spike with price & MFI confirmation (intraday)"
+
+data:
+  timeframe: "15m"
+  lookback_bars: 30
+
+filters:
+  market_cap_min: 1000
+  market_cap_max: null
+  avg_volume_min: 200000
+  price_min: 50
+  price_max: 5000
+
+indicators:
+  - name: "Volume Spike 3x"
+    type: "volume_analysis"
+    weight: 0.35
+
+  - name: "Price Confirmation"
+    type: "price_comparison"
+    weight: 0.25
+
+  - name: "MFI > 60"
+    type: "oscillator"
+    weight: 0.20
+
+  - name: "Above VWAP"
+    type: "price_comparison"
+    weight: 0.10
+
+  - name: "EMA Trend (9>21)"
+    type: "trend"
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.60
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "atr_based"
+    multiplier: 2.0
+    max_percent: 3
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 0.5
+
+alerts:
+  enabled: true
+  priority: "HIGH"

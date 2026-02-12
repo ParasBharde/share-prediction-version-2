@@ -6,7 +6,7 @@
 strategy:
   name: "Mean Reversion"
   version: "1.0"
-  enabled: false
+  enabled: true
   priority: 2
   description: "Oversold quality stocks with mean-reversion potential"
 

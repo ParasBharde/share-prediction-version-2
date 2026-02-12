@@ -1,0 +1,57 @@
+# Options OI Breakout Strategy Configuration
+# Trades CE/PE when price breaks max OI support/resistance
+
+strategy:
+  name: "Options OI Breakout"
+  version: "1.0"
+  enabled: true
+  priority: 1
+  description: "OI support/resistance breakout for options trading"
+
+data:
+  timeframe: "5m"
+  lookback_bars: 50
+
+filters:
+  market_cap_min: 0
+  price_min: 0
+  price_max: 100000
+
+indicators:
+  - name: "OI Breakout"
+    type: "options"
+    weight: 0.35
+
+  - name: "PCR Confirmation"
+    type: "options"
+    weight: 0.20
+
+  - name: "Volume Confirmation"
+    type: "volume_analysis"
+    weight: 0.20
+
+  - name: "EMA Trend"
+    type: "trend"
+    weight: 0.15
+
+  - name: "RSI Filter"
+    type: "oscillator"
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.55
+  signal_type: "BOTH"
+
+risk_management:
+  stop_loss:
+    type: "percentage"
+    percent: 1.0
+    max_percent: 2.0
+  target:
+    type: "risk_reward"
+    ratio: 2.0
+
+alerts:
+  enabled: true
+  priority: "HIGH"

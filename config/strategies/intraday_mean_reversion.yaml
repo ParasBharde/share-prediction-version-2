@@ -1,0 +1,62 @@
+# Intraday Mean Reversion Strategy Configuration
+# Adapted from daily Mean Reversion for 5m/15m timeframes
+
+strategy:
+  name: "Intraday Mean Reversion"
+  version: "1.0"
+  enabled: true
+  priority: 2
+  description: "Oversold bounce back to VWAP (intraday)"
+
+data:
+  timeframe: "15m"
+  lookback_bars: 50
+
+filters:
+  market_cap_min: 2000
+  market_cap_max: null
+  avg_volume_min: 500000
+  price_min: 100
+  price_max: 10000
+
+indicators:
+  - name: "RSI Oversold"
+    type: "oscillator"
+    weight: 0.25
+
+  - name: "Stochastic Oversold"
+    type: "oscillator"
+    weight: 0.25
+
+  - name: "Bollinger Lower Touch"
+    type: "volatility"
+    weight: 0.20
+
+  - name: "Below VWAP"
+    type: "price_comparison"
+    weight: 0.20
+
+  - name: "MACD Improving"
+    type: "oscillator"
+    weight: 0.10
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.55
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "percentage"
+    percent: 2
+    max_percent: 3
+  target:
+    type: "mean_target"
+    target_level: "ema_20"
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 0.5
+
+alerts:
+  enabled: true
+  priority: "MEDIUM"
