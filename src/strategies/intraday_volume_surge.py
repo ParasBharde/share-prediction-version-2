@@ -17,7 +17,7 @@ from src.strategies.indicators.oscillators import rsi
 from src.strategies.indicators.volume_indicators import (
     mfi,
     volume_ratio,
-    vwap,
+    session_vwap,
 )
 from src.utils.constants import AlertPriority, SignalType
 
@@ -109,7 +109,7 @@ class IntradayVolumeSurgeStrategy(BaseStrategy):
 
         # 4. Above VWAP
         try:
-            vwap_values = vwap(df["high"], df["low"], df["close"], df["volume"])
+            vwap_values = session_vwap(df["high"], df["low"], df["close"], df["volume"])
             current_vwap = float(vwap_values.iloc[-1])
             above_vwap = entry_price >= current_vwap
 

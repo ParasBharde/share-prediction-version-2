@@ -2,8 +2,12 @@
 Intraday Momentum Breakout Strategy
 
 Adapted from daily Momentum Breakout for 5m/15m/30m timeframes.
-Instead of 52-week high, uses session high breakout.
-Instead of EMA(200), uses VWAP as structural level.
+Instead of 52-week high, uses TODAY's session high breakout.
+Instead of EMA(200), uses session VWAP as structural level.
+
+HARD REJECTS:
+    - Session high proximity is MANDATORY (must be within 0.5% of today's high)
+    - Minimum volume ratio of 1.0 (not below average)
 """
 
 from typing import Any, Dict, Optional
@@ -14,7 +18,7 @@ from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
 from src.strategies.indicators.moving_averages import ema
 from src.strategies.indicators.oscillators import rsi
-from src.strategies.indicators.volume_indicators import volume_ratio, vwap
+from src.strategies.indicators.volume_indicators import volume_ratio, session_vwap
 from src.utils.constants import AlertPriority, SignalType
 
 logger = get_logger(__name__)
@@ -37,44 +41,63 @@ class IntradayMomentumStrategy(BaseStrategy):
         if not self.apply_pre_filters(company_info):
             return None
 
-        # Need at least 50 bars for intraday (few sessions worth)
         if len(df) < 50:
             logger.debug(f"{symbol}: Insufficient intraday data ({len(df)} < 50)")
+            return None
+
+        latest = df.iloc[-1]
+        entry_price = float(latest["close"])
+
+        # Get TODAY's data only for session high
+        if hasattr(df.index, 'date'):
+            today = df.index[-1].date()
+            today_df = df[df.index.date == today]
+        else:
+            today_df = df.tail(26)  # ~1 day on 15m
+
+        if len(today_df) < 3:
             return None
 
         indicators_met = 0
         weighted_score = 0.0
         indicator_details = {}
 
-        latest = df.iloc[-1]
-        entry_price = float(latest["close"])
-
-        # 1. Session High Proximity (within 1% of session high)
+        # 1. TODAY'S Session High Proximity (MANDATORY - within 0.5%)
         try:
-            session_high = float(df["high"].tail(78).max())  # ~1 day on 5m
+            session_high = float(today_df["high"].max())
             proximity = entry_price / session_high if session_high > 0 else 0
-            near_high = proximity >= 0.99
+            near_high = proximity >= 0.995  # Within 0.5% of today's high
 
             indicator_details["session_high"] = {
                 "session_high": round(session_high, 2),
                 "proximity": round(proximity, 4),
                 "passed": near_high,
             }
-            if near_high:
-                indicators_met += 1
-                weighted_score += 0.25
+
+            # MANDATORY: Must be near session high
+            if not near_high:
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.25
         except Exception as e:
             logger.debug(f"{symbol}: Session high error: {e}")
+            return None
 
-        # 2. Volume Surge (2x average for this time window)
+        # 2. Volume Surge (1.5x average - lowered from 2x, but mandatory > 1.0)
         try:
             vol_r = volume_ratio(df["volume"], 20)
             current_vol_ratio = float(vol_r.iloc[-1])
-            vol_surge = current_vol_ratio >= 2.0
 
-            indicator_details["volume_surge"] = {
+            # HARD REJECT: Volume must be at least average
+            if current_vol_ratio < 1.0:
+                return None
+
+            vol_surge = current_vol_ratio >= 1.5
+
+            indicator_details["volume"] = {
                 "volume_ratio": round(current_vol_ratio, 2),
-                "threshold": 2.0,
+                "threshold": 1.5,
                 "passed": vol_surge,
             }
             if vol_surge:
@@ -100,9 +123,9 @@ class IntradayMomentumStrategy(BaseStrategy):
         except Exception as e:
             logger.debug(f"{symbol}: RSI error: {e}")
 
-        # 4. Above VWAP (price above session VWAP)
+        # 4. Above Session VWAP
         try:
-            vwap_values = vwap(df["high"], df["low"], df["close"], df["volume"])
+            vwap_values = session_vwap(df["high"], df["low"], df["close"], df["volume"])
             current_vwap = float(vwap_values.iloc[-1])
             above_vwap = entry_price > current_vwap
 
@@ -134,6 +157,7 @@ class IntradayMomentumStrategy(BaseStrategy):
         except Exception as e:
             logger.debug(f"{symbol}: EMA error: {e}")
 
+        # Need at least 3 indicators (session high is already 1, so need 2 more)
         min_conditions = self.signal_config.get("min_conditions_met", 3)
         confidence_threshold = self.signal_config.get("confidence_threshold", 0.55)
 
