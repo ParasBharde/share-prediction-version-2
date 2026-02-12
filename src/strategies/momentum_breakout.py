@@ -1,20 +1,19 @@
 """
-Momentum Breakout Strategy
+Momentum Breakout Strategy (V2 - Strict)
 
 Purpose:
     Identifies stocks breaking 52-week highs with volume confirmation.
     Targets stocks with strong upward momentum and institutional interest.
 
+HARD REJECTS:
+    - 52W high proximity is MANDATORY (within 2% of 52W high)
+    - Volume must be >= 1.5x average (no breakout on thin volume)
+    - EMA alignment (20>50>200) is MANDATORY (must be strong uptrend)
+    - R:R must be >= 1.5:1
+
 Dependencies:
     - base_strategy for interface
     - indicators for technical calculations
-
-Logging:
-    - Each stock scan at DEBUG
-    - Signal generation at INFO
-
-Fallbacks:
-    If individual indicator fails, that indicator is skipped.
 """
 
 from typing import Any, Dict, Optional
@@ -24,7 +23,7 @@ import pandas as pd
 from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
 from src.strategies.indicators.moving_averages import ema
-from src.strategies.indicators.oscillators import rsi
+from src.strategies.indicators.oscillators import adx, rsi
 from src.strategies.indicators.volume_indicators import volume_ratio
 from src.utils.constants import AlertPriority, SignalType
 
@@ -57,96 +56,77 @@ class MomentumBreakoutStrategy(BaseStrategy):
         df: pd.DataFrame,
         company_info: Dict[str, Any],
     ) -> Optional[TradingSignal]:
-        """
-        Scan a stock for momentum breakout signals.
-
-        Args:
-            symbol: Stock symbol.
-            df: OHLCV DataFrame (min 200 rows recommended).
-            company_info: Company metadata.
-
-        Returns:
-            TradingSignal if breakout detected, None otherwise.
-        """
         self._scan_stats["total"] += 1
 
-        # Apply pre-filters
         if not self.apply_pre_filters(company_info):
             self._scan_stats["pre_filter_rejected"] += 1
             return None
 
-        # Need sufficient data
         if len(df) < 200:
             self._scan_stats["insufficient_data"] += 1
-            logger.debug(
-                f"{symbol}: Insufficient data "
-                f"({len(df)} < 200 rows)"
-            )
             return None
 
         indicators_met = 0
-        total_indicators = len(self.indicators_config)
         weighted_score = 0.0
         indicator_details = {}
 
         latest = df.iloc[-1]
         entry_price = float(latest["close"])
 
-        # 1. 52-Week High Proximity
+        # ============================================================
+        # MANDATORY 1: 52-Week High Proximity (within 2%)
+        # ============================================================
         try:
             high_52w = float(df["high"].tail(252).max())
             proximity = entry_price / high_52w if high_52w > 0 else 0
             near_high = proximity >= 0.98
 
             indicator_details["52w_high"] = {
-                "high_52w": high_52w,
+                "high_52w": round(high_52w, 2),
                 "proximity": round(proximity, 4),
                 "passed": near_high,
             }
 
-            if near_high:
-                indicators_met += 1
-                weighted_score += 0.25
+            if not near_high:
+                self._scan_stats["no_pattern"] += 1
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.25
         except Exception as e:
             logger.debug(f"{symbol}: 52W high calc error: {e}")
+            return None
 
-        # 2. Volume Surge
+        # ============================================================
+        # MANDATORY 2: Volume >= 1.5x (hard reject below average)
+        # ============================================================
         try:
-            vol_ratio = volume_ratio(df["volume"], 20)
-            current_vol_ratio = float(vol_ratio.iloc[-1])
-            vol_surge = current_vol_ratio >= 2.0
+            vol_r = volume_ratio(df["volume"], 20)
+            current_vol_ratio = float(vol_r.iloc[-1])
+
+            # Hard reject: volume below average = no breakout
+            if current_vol_ratio < 1.0:
+                self._scan_stats["no_pattern"] += 1
+                return None
+
+            vol_surge = current_vol_ratio >= 1.5
 
             indicator_details["volume_surge"] = {
                 "volume_ratio": round(current_vol_ratio, 2),
-                "threshold": 2.0,
+                "threshold": 1.5,
                 "passed": vol_surge,
             }
 
             if vol_surge:
                 indicators_met += 1
-                weighted_score += 0.30
+                weighted_score += 0.25
         except Exception as e:
             logger.debug(f"{symbol}: Volume calc error: {e}")
+            return None
 
-        # 3. RSI Range (50-70)
-        try:
-            rsi_values = rsi(df["close"], 14)
-            current_rsi = float(rsi_values.iloc[-1])
-            rsi_ok = 50 <= current_rsi <= 70
-
-            indicator_details["rsi"] = {
-                "value": round(current_rsi, 2),
-                "range": "50-70",
-                "passed": rsi_ok,
-            }
-
-            if rsi_ok:
-                indicators_met += 1
-                weighted_score += 0.15
-        except Exception as e:
-            logger.debug(f"{symbol}: RSI calc error: {e}")
-
-        # 4. EMA Alignment (20 > 50 > 200)
+        # ============================================================
+        # MANDATORY 3: EMA Alignment (20 > 50 > 200 = strong uptrend)
+        # ============================================================
         try:
             ema_20 = float(ema(df["close"], 20).iloc[-1])
             ema_50 = float(ema(df["close"], 50).iloc[-1])
@@ -160,36 +140,65 @@ class MomentumBreakoutStrategy(BaseStrategy):
                 "passed": aligned,
             }
 
-            if aligned:
-                indicators_met += 1
-                weighted_score += 0.20
+            if not aligned:
+                self._scan_stats["no_pattern"] += 1
+                return None
+
+            indicators_met += 1
+            weighted_score += 0.20
         except Exception as e:
             logger.debug(f"{symbol}: EMA calc error: {e}")
+            return None
 
-        # 5. Relative Strength vs Market
+        # ============================================================
+        # OPTIONAL 4: RSI Momentum Zone (55-75)
+        # Tighter range: must show momentum but not overbought
+        # ============================================================
         try:
-            stock_return = (
-                (entry_price - float(df["close"].iloc[-21]))
-                / float(df["close"].iloc[-21])
-                * 100
-            )
-            # Use stock return vs 0 as simplified check
-            rs_ok = stock_return > 0
+            rsi_values = rsi(df["close"], 14)
+            current_rsi = float(rsi_values.iloc[-1])
+            rsi_ok = 55 <= current_rsi <= 75
 
-            indicator_details["relative_strength"] = {
-                "stock_return_20d": round(stock_return, 2),
-                "passed": rs_ok,
+            indicator_details["rsi"] = {
+                "value": round(current_rsi, 2),
+                "range": "55-75",
+                "passed": rsi_ok,
             }
 
-            if rs_ok:
-                indicators_met += 1
-                weighted_score += 0.10
-        except Exception as e:
-            logger.debug(
-                f"{symbol}: Relative strength calc error: {e}"
-            )
+            # Hard reject if overbought (RSI > 80)
+            if current_rsi > 80:
+                return None
 
-        # Check signal generation criteria
+            if rsi_ok:
+                indicators_met += 1
+                weighted_score += 0.15
+        except Exception as e:
+            logger.debug(f"{symbol}: RSI calc error: {e}")
+
+        # ============================================================
+        # OPTIONAL 5: ADX > 25 (trending market, not range-bound)
+        # ============================================================
+        try:
+            adx_data = adx(df["high"], df["low"], df["close"], 14)
+            current_adx = float(adx_data["adx"].iloc[-1])
+            adx_ok = current_adx >= 25
+
+            indicator_details["adx_trend"] = {
+                "value": round(current_adx, 2),
+                "threshold": 25,
+                "passed": adx_ok,
+            }
+
+            if adx_ok:
+                indicators_met += 1
+                weighted_score += 0.15
+        except Exception as e:
+            logger.debug(f"{symbol}: ADX calc error: {e}")
+
+        # ============================================================
+        # Signal Generation
+        # 3 mandatory already met + need at least 1 optional = 4 min
+        # ============================================================
         min_conditions = self.signal_config.get(
             "min_conditions_met", 4
         )
@@ -206,6 +215,18 @@ class MomentumBreakoutStrategy(BaseStrategy):
                 entry_price, stop_loss, df
             )
 
+            # R:R floor check - must be >= 1.5
+            risk = abs(entry_price - stop_loss)
+            reward = abs(target - entry_price)
+            if risk <= 0 or reward / risk < 1.5:
+                logger.debug(
+                    f"{symbol}: R:R too low "
+                    f"({reward/risk:.1f} < 1.5)"
+                    if risk > 0 else f"{symbol}: Zero risk"
+                )
+                self._scan_stats["low_confidence"] += 1
+                return None
+
             signal = TradingSignal(
                 symbol=symbol,
                 company_name=company_info.get("name", symbol),
@@ -217,40 +238,31 @@ class MomentumBreakoutStrategy(BaseStrategy):
                 stop_loss=round(stop_loss, 2),
                 priority=AlertPriority.HIGH,
                 indicators_met=indicators_met,
-                total_indicators=total_indicators,
+                total_indicators=5,
                 indicator_details=indicator_details,
                 metadata={
                     "timeframe": self.timeframe,
-                    "volume_surge": indicator_details.get(
-                        "volume_surge", {}
-                    ).get("volume_ratio", 0),
+                    "mode": "daily",
+                    "volume_ratio": current_vol_ratio,
                     "rsi": indicator_details.get("rsi", {}).get(
                         "value", 0
                     ),
-                    "high_52w": indicator_details.get(
-                        "52w_high", {}
-                    ).get("high_52w", 0),
+                    "high_52w": round(high_52w, 2),
                 },
             )
 
             logger.info(
                 f"SIGNAL: {self.name} - {symbol} "
                 f"(confidence: {weighted_score:.2f}, "
-                f"indicators: {indicators_met}/{total_indicators})",
+                f"indicators: {indicators_met}/5)",
                 extra=signal.to_dict(),
             )
 
             self._scan_stats["signals"] += 1
             return signal
 
-        # Not enough indicators met
         if indicators_met > 0:
             self._scan_stats["low_confidence"] += 1
-            logger.info(
-                f"{symbol}: {self.name} - "
-                f"{indicators_met}/{min_conditions} indicators met "
-                f"(score={weighted_score:.2f}/{confidence_threshold})"
-            )
         else:
             self._scan_stats["no_pattern"] += 1
         return None

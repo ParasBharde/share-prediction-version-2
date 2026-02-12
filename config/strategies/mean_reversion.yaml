@@ -64,7 +64,7 @@ indicators:
     weight: 0.10
 
 signal_generation:
-  min_conditions_met: 3  # Out of 5
+  min_conditions_met: 4  # RSI weak + 200DMA + MACD turn + at least 1 more
   confidence_threshold: 0.65
   signal_type: "BUY"
 

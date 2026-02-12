@@ -36,7 +36,7 @@ indicators:
 
   - name: "EMA 9 Direction"
     type: "trend"
-    weight: 0.10
+    weight: 0.15
 
 signal_generation:
   min_conditions_met: 3

@@ -7,6 +7,7 @@ strategy:
   name: "Mother Candle"
   version: "1.0"
   enabled: true
+  mode: "daily"
   priority: 2  # Higher = checked first
   description: >
     Detects a large Mother Candle followed by 3-6 Baby Candles

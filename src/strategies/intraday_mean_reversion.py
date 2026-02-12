@@ -2,9 +2,14 @@
 Intraday Mean Reversion Strategy
 
 Adapted from daily Mean Reversion for 5m/15m/30m timeframes.
-Uses VWAP as the 'mean' instead of 200 EMA.
+Uses session VWAP as the 'mean' instead of 200 EMA.
 Uses Stochastic oversold instead of just RSI.
-Targets reversion back to VWAP level.
+Targets reversion back to session VWAP level.
+
+HARD REJECTS:
+    - RSI must be < 40 (stock must be weak, not neutral/strong)
+    - VWAP distance must be < 5% (prevents unrealistic targets)
+    - Stochastic cross_up only counts if %K < 30 (must be near oversold)
 """
 
 from typing import Any, Dict, Optional
@@ -16,7 +21,7 @@ from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
 from src.strategies.indicators.moving_averages import ema, sma
 from src.strategies.indicators.oscillators import macd, rsi, stochastic
-from src.strategies.indicators.volume_indicators import volume_ratio, vwap
+from src.strategies.indicators.volume_indicators import volume_ratio, session_vwap
 from src.utils.constants import AlertPriority, SignalType
 
 logger = get_logger(__name__)
@@ -42,31 +47,34 @@ class IntradayMeanReversionStrategy(BaseStrategy):
         if len(df) < 50:
             return None
 
+        latest = df.iloc[-1]
+        entry_price = float(latest["close"])
+
+        # HARD REJECT: RSI must be < 40 (stock must be weak)
+        try:
+            rsi_values = rsi(df["close"], 14)
+            current_rsi = float(rsi_values.iloc[-1])
+            if current_rsi > 40:
+                return None
+        except Exception:
+            return None
+
         indicators_met = 0
         weighted_score = 0.0
         indicator_details = {}
 
-        latest = df.iloc[-1]
-        entry_price = float(latest["close"])
-
         # 1. RSI Oversold (RSI <= 30)
-        try:
-            rsi_values = rsi(df["close"], 14)
-            current_rsi = float(rsi_values.iloc[-1])
-            is_oversold = current_rsi <= 30
+        is_oversold = current_rsi <= 30
+        indicator_details["rsi_oversold"] = {
+            "value": round(current_rsi, 2),
+            "threshold": 30,
+            "passed": is_oversold,
+        }
+        if is_oversold:
+            indicators_met += 1
+            weighted_score += 0.25
 
-            indicator_details["rsi_oversold"] = {
-                "value": round(current_rsi, 2),
-                "threshold": 30,
-                "passed": is_oversold,
-            }
-            if is_oversold:
-                indicators_met += 1
-                weighted_score += 0.25
-        except Exception as e:
-            logger.debug(f"{symbol}: RSI error: {e}")
-
-        # 2. Stochastic Oversold (%K < 20 and %K crossing above %D)
+        # 2. Stochastic Oversold (%K < 20, or %K cross up %D while %K < 30)
         try:
             stoch = stochastic(df["high"], df["low"], df["close"], 14, 3)
             stoch_k = float(stoch["stoch_k"].iloc[-1])
@@ -74,7 +82,8 @@ class IntradayMeanReversionStrategy(BaseStrategy):
             prev_k = float(stoch["stoch_k"].iloc[-2])
             prev_d = float(stoch["stoch_d"].iloc[-2])
             stoch_oversold = stoch_k < 20
-            stoch_cross_up = prev_k <= prev_d and stoch_k > stoch_d
+            # Cross up only counts if %K is near oversold zone (<30)
+            stoch_cross_up = prev_k <= prev_d and stoch_k > stoch_d and stoch_k < 30
 
             stoch_ok = stoch_oversold or stoch_cross_up
 
@@ -109,12 +118,20 @@ class IntradayMeanReversionStrategy(BaseStrategy):
         except Exception as e:
             logger.debug(f"{symbol}: BB error: {e}")
 
-        # 4. Below VWAP (price below VWAP = room to revert UP)
+        # 4. Below Session VWAP (price below VWAP = room to revert UP)
         try:
-            vwap_values = vwap(df["high"], df["low"], df["close"], df["volume"])
+            vwap_values = session_vwap(df["high"], df["low"], df["close"], df["volume"])
             current_vwap = float(vwap_values.iloc[-1])
             below_vwap = entry_price < current_vwap
             distance_to_vwap = ((current_vwap - entry_price) / entry_price) * 100
+
+            # HARD REJECT: If VWAP is > 5% away, target is unrealistic
+            if distance_to_vwap > 5.0:
+                logger.debug(
+                    f"{symbol}: VWAP too far ({distance_to_vwap:.1f}%), "
+                    f"unrealistic target"
+                )
+                return None
 
             indicator_details["vwap_support"] = {
                 "vwap": round(current_vwap, 2),
@@ -127,6 +144,7 @@ class IntradayMeanReversionStrategy(BaseStrategy):
                 weighted_score += 0.20
         except Exception as e:
             logger.debug(f"{symbol}: VWAP error: {e}")
+            return None
 
         # 5. MACD Histogram Improving (momentum turning up)
         try:
@@ -151,12 +169,18 @@ class IntradayMeanReversionStrategy(BaseStrategy):
         if indicators_met >= min_conditions and weighted_score >= confidence_threshold:
             stop_loss = self.calculate_stop_loss(entry_price, df)
 
-            # Target is VWAP level (mean reversion)
+            # Target is session VWAP level (mean reversion)
             target_vwap = indicator_details.get("vwap_support", {}).get("vwap", 0)
             if target_vwap > entry_price:
                 target = target_vwap
             else:
                 target = self.calculate_target(entry_price, stop_loss, df)
+
+            # Final check: R:R must be > 1.0
+            risk = abs(entry_price - stop_loss)
+            reward = abs(target - entry_price)
+            if risk <= 0 or reward / risk < 1.0:
+                return None
 
             return TradingSignal(
                 symbol=symbol,

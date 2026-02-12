@@ -63,8 +63,8 @@ indicators:
     weight: 0.10
 
 signal_generation:
-  min_conditions_met: 3  # Out of 5 (relaxed from 4 - too strict in sideways markets)
-  confidence_threshold: 0.55
+  min_conditions_met: 4  # 3 mandatory + 1 optional needed
+  confidence_threshold: 0.70
   signal_type: "BUY"
 
 risk_management:
