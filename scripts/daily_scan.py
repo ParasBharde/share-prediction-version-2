@@ -100,6 +100,15 @@ def parse_args():
             "Useful to replace standalone mother_candle_scan.py runs."
         ),
     )
+    parser.add_argument(
+        "--test-symbol",
+        type=str,
+        help=(
+            "Test a single stock symbol (e.g. ICICIBANK). "
+            "Fetches data and runs Mother Candle V2 with "
+            "detailed output. Implies --force."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -835,9 +844,153 @@ async def _get_stock_universe(
     return []
 
 
+async def test_single_symbol(symbol: str) -> None:
+    """
+    Test a single stock against Mother Candle V2 strategy.
+
+    Fetches data, runs the strategy, and prints detailed output.
+    Useful for verifying signals on specific stocks.
+
+    Usage:
+        python scripts/daily_scan.py --test-symbol ICICIBANK
+    """
+    print(f"\n{'='*60}")
+    print(f"  MOTHER CANDLE V2 - SINGLE STOCK TEST")
+    print(f"  Symbol: {symbol}")
+    print(f"{'='*60}\n")
+
+    from src.data_ingestion.fallback_manager import FallbackManager
+    import pandas as pd
+
+    fallback = FallbackManager()
+
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
+
+        print(f"Fetching data for {symbol}...")
+        data = await fallback.fetch_stock_data(
+            symbol, start_date, end_date
+        )
+
+        if not data or not data.get("records"):
+            print(f"ERROR: No data found for {symbol}")
+            return
+
+        from src.data_ingestion.data_validator import (
+            DataValidator,
+        )
+        validator = DataValidator()
+        records = validator.clean_records(
+            data["records"], symbol
+        )
+
+        if len(records) < 50:
+            print(
+                f"ERROR: Only {len(records)} records "
+                f"(need 50+)"
+            )
+            return
+
+        df = pd.DataFrame(records)
+        if "date" in df.columns:
+            df.set_index("date", inplace=True)
+
+        print(f"Data: {len(df)} candles loaded")
+        last = df.iloc[-1]
+        print(
+            f"Last candle: O={last['open']:.2f} "
+            f"H={last['high']:.2f} "
+            f"L={last['low']:.2f} "
+            f"C={last['close']:.2f} "
+            f"V={int(last['volume']):,}"
+        )
+
+        # Load Mother Candle V2 strategy
+        loader = StrategyLoader()
+        strategies = loader.load_by_mode("daily")
+        mc_v2 = None
+        for s in strategies:
+            if s.name == "Mother Candle V2":
+                mc_v2 = s
+                break
+
+        if mc_v2 is None:
+            print("ERROR: Mother Candle V2 strategy not loaded")
+            return
+
+        print(f"\nStrategy params:")
+        params = mc_v2.strategy_config.get("params", {})
+        for k, v in params.items():
+            print(f"  {k}: {v}")
+
+        company_info = {
+            "name": symbol,
+            "symbol": symbol,
+            "sector": "Unknown",
+            "market_cap": 0,
+            "last_price": float(last["close"]),
+        }
+
+        print(f"\nRunning scan...")
+        signal = mc_v2.scan(symbol, df, company_info)
+
+        stats = mc_v2.get_scan_stats()
+        print(f"\nScan stats: {stats}")
+
+        if signal:
+            print(f"\n{'='*60}")
+            print(f"  SIGNAL FOUND!")
+            print(f"{'='*60}")
+            print(f"  Symbol:     {signal.symbol}")
+            print(f"  Strategy:   {signal.strategy_name}")
+            print(f"  Type:       {signal.signal_type.value}")
+            print(f"  Entry:      Rs.{signal.entry_price:.2f}")
+            print(f"  Target:     Rs.{signal.target_price:.2f} "
+                  f"(+{mc_v2.target_pct}%)")
+            print(f"  Stop Loss:  Rs.{signal.stop_loss:.2f} "
+                  f"(-{signal.metadata.get('sl_distance_pct', 0)}%)")
+            print(f"  SL Method:  {signal.metadata.get('sl_method', 'N/A')}")
+            print(f"  R:R Ratio:  1:{signal.metadata.get('rr_ratio', 0)}")
+            print(f"  Confidence: {signal.confidence:.0%}")
+            print(f"  Indicators: {signal.indicators_met}/{signal.total_indicators}")
+            print(f"\n  Pattern Details:")
+            details = signal.indicator_details
+            mc = details.get("mother_candle", {})
+            print(f"    Mother High:      Rs.{mc.get('mother_high', 0)}")
+            print(f"    Mother Low:       Rs.{mc.get('mother_low', 0)}")
+            print(f"    Mother Range:     Rs.{mc.get('mother_range', 0)}")
+            print(f"    Baby Count:       {mc.get('baby_count', 0)}")
+            print(f"    Mother Position:  {mc.get('mother_position', 'N/A')}")
+            fb = details.get("fresh_breakout", {})
+            print(f"    Breakout Close:   Rs.{fb.get('breakout_close', 0)}")
+            print(f"    Break Amount:     Rs.{fb.get('break_amount', 0)}")
+            print(f"    Break %:          {fb.get('break_pct', 0)}%")
+            mv = details.get("mother_volume", {})
+            print(f"    Mother Vol Ratio: {mv.get('mother_vol_ratio', 0)}x")
+            bv = details.get("breakout_volume", {})
+            print(f"    Breakout Vol:     {bv.get('breakout_vol_ratio', 0)}x")
+        else:
+            print(f"\n  NO SIGNAL - Pattern not found for {symbol}")
+            print(f"  Rejection reason from stats: {stats}")
+
+        print(f"\n{'='*60}\n")
+
+    finally:
+        try:
+            await fallback.close()
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     args = parse_args()
     strategy_filter = args.strategies
+
+    # Single stock test mode
+    if args.test_symbol:
+        asyncio.run(test_single_symbol(args.test_symbol))
+        sys.exit(0)
 
     if args.mother_v2_only:
         strategy_filter = ["Mother Candle V2"]

@@ -1,24 +1,44 @@
-# Mother Candle Breakout V2 - Pure Price Action Strategy
-# Purpose: Fresh breakout above Mother Candle after 3-14 day consolidation
-# Author: System
-# Last Modified: 2026-02-12
+# Mother Candle Breakout V2 - Research-Based Pure Price Action Strategy
+#
+# Based on established Inside Bar / Mother Candle trading concepts from:
+# Nial Fuller, PriceAction.com, Subashish Pani (Power of Stocks),
+# Al Brooks (Price Action trading).
+#
+# ALL params below are configurable - tune to your preference.
+# Last Modified: 2026-02-13
 
 strategy:
   name: "Mother Candle V2"
-  version: "2.0"
+  version: "2.1"
   enabled: true
   mode: "daily"
-  priority: 5  # Highest priority - best strategy
+  priority: 5
   description: >
-    Pure price-action Mother Candle strategy. Finds a large candle (Mother)
-    that contains 3-14 subsequent baby candles strictly inside its range.
-    Triggers ONLY when today's candle is the FIRST to break above Mother High.
-    Volume confirmed on both Mother (1.5x) and breakout (1.2x) candles.
+    Research-based Mother Candle (Inside Bar) breakout strategy.
+    Scans right-to-left on daily chart to find a large Mother Candle
+    with 2+ baby candles strictly inside, confirmed by fresh breakout
+    on the last candle with volume confirmation.
+    Target and SL are configurable fixed percentages.
+
   params:
-    max_lookback: 15          # Search up to 15 candles back for Mother
-    min_baby_candles: 3       # Minimum baby candles required
-    mother_range_multiplier: 1.5  # Mother range must be 1.5x avg of prev 5
-    momentum_filters_enabled: false  # Set true to add RSI/ADX/EMA filters
+    # --- Pattern Detection ---
+    max_lookback: 20              # Search up to 20 candles back for Mother
+    min_baby_candles: 2           # Minimum baby candles (2+ per research)
+    mother_range_multiplier: 1.5  # Mother range > 1.5x avg of prior 5 candles
+    baby_tolerance_pct: 0.1       # 0.1% wick tolerance (near-zero for strict)
+
+    # --- Volume Confirmation ---
+    mother_vol_multiplier: 1.3    # Mother vol > 1.3x avg of prior 10 candles
+    breakout_vol_multiplier: 1.2  # Breakout vol > 1.2x of 20-day avg volume
+
+    # --- Target & Stop Loss (configurable) ---
+    target_pct: 5.0               # Target = entry + 5%
+    stop_loss_pct: 3.0            # Default SL = entry - 3%
+    max_stop_loss_pct: 5.0        # Reject trade if SL > 5% from entry
+    use_mother_low_sl: true       # Use Mother Low as SL if tighter than fixed %
+
+    # --- Entry Buffer ---
+    max_entry_buffer_pct: 2.0     # Reject if breakout close > 2% above Mother High
 
 data:
   timeframe: "1D"
@@ -35,9 +55,9 @@ indicators:
   - name: "Mother Candle Pattern"
     type: "price_pattern"
     params:
-      min_babies: 3
-      max_lookback: 15
-    weight: 0.35
+      min_babies: 2
+      max_lookback: 20
+    weight: 0.25
 
   - name: "Fresh Breakout"
     type: "price_pattern"
@@ -48,27 +68,29 @@ indicators:
   - name: "Mother Volume"
     type: "volume_analysis"
     params:
-      condition: "mother_volume >= avg_vol_10 * 1.5"
-    weight: 0.20
+      condition: "mother_volume >= avg_vol_10 * 1.3"
+    weight: 0.25
 
   - name: "Breakout Volume"
     type: "volume_analysis"
     params:
       condition: "breakout_volume >= avg_vol_20 * 1.2"
-    weight: 0.20
+    weight: 0.25
 
 signal_generation:
-  min_conditions_met: 4  # All 4 must pass (pattern + fresh + 2 volumes)
+  min_conditions_met: 4
   confidence_threshold: 0.70
   signal_type: "BUY"
 
 risk_management:
   stop_loss:
-    type: "pattern_based"  # SL at Mother Candle Low
-    max_percent: 7.0
+    type: "configurable"
+    default_percent: 3.0
+    max_percent: 5.0
+    use_mother_low: true
   target:
-    type: "risk_reward"
-    ratio: 2.0
+    type: "fixed_percent"
+    percent: 5.0
   position_size:
     type: "risk_based"
     risk_per_trade_percent: 1
