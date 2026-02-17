@@ -16,7 +16,7 @@ strategy:
   params:
     # --- Pattern Detection ---
     max_lookback: 20
-    min_baby_candles: 3
+    min_baby_candles: 2
     mother_range_multiplier: 1.5
     baby_tolerance_pct: 0.1
 
@@ -37,17 +37,17 @@ strategy:
     # 1. TREND FILTER - STRICT
     require_uptrend: true
     trend_ema_period: 50
-    price_above_ema_pct: 0.0          # ✓ STRICT: Must be 3% above EMA
+    price_above_ema_pct: 3.0          # ✓ STRICT: Must be 3% above EMA
     min_ema_slope_pct: -0.5           # ✓ NEW: EMA must not be falling
     
     # 2. MINIMUM BREAKOUT STRENGTH - STRICT  
-    min_breakout_pct: 0.3             # ✓ STRICT: Must be 1% above Mother
+    min_breakout_pct: 1.0             # ✓ STRICT: Must be 1% above Mother
     max_entry_buffer_pct: 2.0
     
     # 3. PRICE STRUCTURE FILTER - STRICT
     mother_position_filter: true
     recent_high_lookback: 30
-    mother_near_high_pct: 15
+    mother_near_high_pct: 10
     
     # 4. FAILED BREAKOUT CHECK
     check_failed_breakouts: true

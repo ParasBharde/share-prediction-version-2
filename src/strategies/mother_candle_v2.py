@@ -1,42 +1,19 @@
 """
-Mother Candle Breakout Strategy V2 - Research-Based Pure Price Action
+Mother Candle Breakout Strategy V2 - IMPROVED VERSION
+Added critical filters to prevent false signals like SICALLOG
 
-═══════════════════════════════════════════════════
-CONCEPT (from established trading literature):
-    The "Inside Bar" / "Mother Candle" pattern is a consolidation
-    pattern where a large candle (Mother) contains subsequent smaller
-    candles (Babies) entirely within its high-low range.
-    When price finally breaks out, it signals strong directional momentum.
-
-    Sources: Nial Fuller, PriceAction.com, Subashish Pani (Power of Stocks),
-    Al Brooks (Price Action), multiple candlestick pattern references.
-
-═══════════════════════════════════════════════════
-ALGORITHM (Right-to-Left scan):
-    Step 1: Start from last candle (potential breakout), scan backward
-    Step 2: For each candidate Mother, check if it's a large candle
-    Step 3: Validate ALL candles between Mother and last are babies
-            (strictly contained within Mother's high-low range)
-    Step 4: Confirm last candle CLOSES above Mother High (fresh breakout)
-    Step 5: Volume confirmation (Mother + Breakout candle)
-    Step 6: Generate signal with configurable target/SL
-
-═══════════════════════════════════════════════════
-RULES (research-based):
-    - Mother must be a significant candle (range > multiplier x avg prior)
-    - ALL baby candles must be inside Mother H/L (with tiny tolerance)
-    - NO baby candle may have closed above Mother High (fresh breakout only)
-    - Last candle must CLOSE above Mother High
-    - Mother volume should be above average (institutional candle)
-    - Breakout volume should be above average (real participation)
-    - Volume should decline during babies (consolidation)
-    - Target and StopLoss are configurable fixed percentages
-    - Max SL cap to reject patterns where Mother is too large
+NEW FILTERS ADDED:
+1. Trend Filter: Only trade in uptrend (price > 50 EMA)
+2. Minimum Breakout Strength: Breakout must be > min threshold
+3. Price Structure: Ensure Mother is near recent highs, not in downtrend
+4. Failed Breakout Filter: Check recent history for failed breakouts
+5. ATR-based validation: Ensure sufficient volatility
 """
 
 from typing import Any, Dict, Optional
 
 import pandas as pd
+import numpy as np
 
 from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
@@ -48,11 +25,7 @@ logger = get_logger(__name__)
 
 class MotherCandleV2Strategy(BaseStrategy):
     """
-    Research-based Mother Candle (Inside Bar) Breakout strategy.
-
-    Scans right-to-left on daily chart to find a Mother Candle
-    with 2+ baby candles strictly inside, confirmed by a fresh
-    breakout on the last candle with volume confirmation.
+    IMPROVED Mother Candle strategy with trend and context filters.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -64,33 +37,46 @@ class MotherCandleV2Strategy(BaseStrategy):
         # Pattern detection params
         self.max_lookback = params.get("max_lookback", 20)
         self.min_babies = params.get("min_baby_candles", 2)
-        self.mother_range_multiplier = params.get(
-            "mother_range_multiplier", 1.5
-        )
-        self.baby_tolerance_pct = params.get(
-            "baby_tolerance_pct", 0.1
-        )
+        self.mother_range_multiplier = params.get("mother_range_multiplier", 1.5)
+        self.baby_tolerance_pct = params.get("baby_tolerance_pct", 0.1)
 
         # Volume params
-        self.mother_vol_multiplier = params.get(
-            "mother_vol_multiplier", 1.3
-        )
-        self.breakout_vol_multiplier = params.get(
-            "breakout_vol_multiplier", 1.2
-        )
+        self.mother_vol_multiplier = params.get("mother_vol_multiplier", 1.3)
+        self.breakout_vol_multiplier = params.get("breakout_vol_multiplier", 1.2)
 
-        # Target & Stop Loss params (fixed percentage based)
+        # Target & Stop Loss params
         self.target_pct = params.get("target_pct", 5.0)
         self.stop_loss_pct = params.get("stop_loss_pct", 3.0)
         self.max_stop_loss_pct = params.get("max_stop_loss_pct", 5.0)
-        self.use_mother_low_sl = params.get(
-            "use_mother_low_sl", True
-        )
+        self.use_mother_low_sl = params.get("use_mother_low_sl", True)
 
-        # Entry buffer - reject if breakout candle already moved too far
-        self.max_entry_buffer_pct = params.get(
-            "max_entry_buffer_pct", 2.0
-        )
+        # ═══════════════════════════════════════════════════════════
+        # NEW FILTERS TO PREVENT FALSE SIGNALS
+        # ═══════════════════════════════════════════════════════════
+        
+        # 1. TREND FILTER
+        self.require_uptrend = params.get("require_uptrend", True)
+        self.trend_ema_period = params.get("trend_ema_period", 50)
+        self.price_above_ema_pct = params.get("price_above_ema_pct", 0)  # Price must be >= EMA
+        
+        # 2. MINIMUM BREAKOUT STRENGTH
+        self.min_breakout_pct = params.get("min_breakout_pct", 0.3)  # Breakout must be > 0.3% above Mother High
+        self.max_entry_buffer_pct = params.get("max_entry_buffer_pct", 2.0)
+        
+        # 3. PRICE STRUCTURE FILTER
+        # Mother should be near recent highs, not in middle of downtrend
+        self.mother_position_filter = params.get("mother_position_filter", True)
+        self.recent_high_lookback = params.get("recent_high_lookback", 30)
+        self.mother_near_high_pct = params.get("mother_near_high_pct", 10)  # Mother High within 10% of recent high
+        
+        # 4. FAILED BREAKOUT CHECK
+        # Don't trade if there were recent failed breakouts
+        self.check_failed_breakouts = params.get("check_failed_breakouts", True)
+        self.failed_breakout_lookback = params.get("failed_breakout_lookback", 10)
+        
+        # 5. ATR VALIDATION
+        self.min_atr_pct = params.get("min_atr_pct", 1.0)  # Minimum ATR as % of price
+        self.atr_period = params.get("atr_period", 14)
 
         self._scan_stats = {
             "total": 0,
@@ -99,6 +85,11 @@ class MotherCandleV2Strategy(BaseStrategy):
             "no_pattern": 0,
             "volume_rejected": 0,
             "sl_too_wide": 0,
+            "trend_rejected": 0,  # NEW
+            "weak_breakout": 0,  # NEW
+            "bad_position": 0,  # NEW
+            "failed_breakout_history": 0,  # NEW
+            "low_volatility": 0,  # NEW
             "signals": 0,
         }
 
@@ -119,15 +110,47 @@ class MotherCandleV2Strategy(BaseStrategy):
             self._scan_stats["pre_filter_rejected"] += 1
             return None
 
-        # Need enough data for lookback + averages
-        min_data = self.max_lookback + 20
+        # Need enough data
+        min_data = max(self.max_lookback + 20, self.trend_ema_period + 10, self.recent_high_lookback + 10)
         if len(df) < min_data:
             self._scan_stats["insufficient_data"] += 1
             return None
 
-        # ============================================================
-        # STEP 1-4: Find Mother, Validate Babies, Check Breakout
-        # ============================================================
+        # ════════════════════════════════════════════════════════════
+        # NEW FILTER 1: TREND CHECK (price > EMA)
+        # ════════════════════════════════════════════════════════════
+        if self.require_uptrend:
+            ema = df["close"].ewm(span=self.trend_ema_period, adjust=False).mean()
+            last_close = float(df["close"].iloc[-1])
+            last_ema = float(ema.iloc[-1])
+            
+            price_vs_ema_pct = ((last_close - last_ema) / last_ema) * 100
+            
+            if price_vs_ema_pct < self.price_above_ema_pct:
+                self._scan_stats["trend_rejected"] += 1
+                logger.debug(
+                    f"{symbol}: Trend rejected - Price {last_close:.2f} is "
+                    f"{price_vs_ema_pct:.2f}% vs EMA{self.trend_ema_period} {last_ema:.2f}"
+                )
+                return None
+
+        # ════════════════════════════════════════════════════════════
+        # NEW FILTER 5: ATR VALIDATION (sufficient volatility)
+        # ════════════════════════════════════════════════════════════
+        atr = self._calculate_atr(df, self.atr_period)
+        last_close = float(df["close"].iloc[-1])
+        atr_pct = (atr / last_close) * 100 if last_close > 0 else 0
+        
+        if atr_pct < self.min_atr_pct:
+            self._scan_stats["low_volatility"] += 1
+            logger.debug(
+                f"{symbol}: Low volatility - ATR {atr_pct:.2f}% < {self.min_atr_pct}%"
+            )
+            return None
+
+        # ════════════════════════════════════════════════════════════
+        # FIND MOTHER CANDLE PATTERN (original logic)
+        # ════════════════════════════════════════════════════════════
         pattern = self._discover_mother_candle(df)
         if pattern is None:
             self._scan_stats["no_pattern"] += 1
@@ -139,81 +162,99 @@ class MotherCandleV2Strategy(BaseStrategy):
         baby_count = pattern["baby_count"]
         breakout_close = pattern["breakout_close"]
 
-        # ============================================================
-        # STEP 5: Volume Confirmation
-        # ============================================================
-        # 5a. Mother candle volume > multiplier x avg of prior 10
+        # ════════════════════════════════════════════════════════════
+        # NEW FILTER 2: MINIMUM BREAKOUT STRENGTH
+        # ════════════════════════════════════════════════════════════
+        breakout_strength_pct = ((breakout_close - mother_high) / mother_high) * 100
+        
+        if breakout_strength_pct < self.min_breakout_pct:
+            self._scan_stats["weak_breakout"] += 1
+            logger.debug(
+                f"{symbol}: Weak breakout - {breakout_strength_pct:.2f}% < {self.min_breakout_pct}%"
+            )
+            return None
+        
+        # Also check max buffer (don't chase overextended breakouts)
+        if breakout_strength_pct > self.max_entry_buffer_pct:
+            self._scan_stats["weak_breakout"] += 1
+            return None
+
+        # ════════════════════════════════════════════════════════════
+        # NEW FILTER 3: PRICE STRUCTURE - Mother near recent highs
+        # ════════════════════════════════════════════════════════════
+        if self.mother_position_filter:
+            recent_high = float(df["high"].iloc[-self.recent_high_lookback:].max())
+            mother_vs_high_pct = ((recent_high - mother_high) / recent_high) * 100
+            
+            if mother_vs_high_pct > self.mother_near_high_pct:
+                self._scan_stats["bad_position"] += 1
+                logger.debug(
+                    f"{symbol}: Bad position - Mother High {mother_high:.2f} is "
+                    f"{mother_vs_high_pct:.2f}% below recent high {recent_high:.2f}"
+                )
+                return None
+
+        # ════════════════════════════════════════════════════════════
+        # NEW FILTER 4: CHECK FOR RECENT FAILED BREAKOUTS
+        # ════════════════════════════════════════════════════════════
+        if self.check_failed_breakouts:
+            # Look for candles in last N days that closed above a prior high
+            # but then fell back below it
+            failed_breakout = self._has_recent_failed_breakout(
+                df, self.failed_breakout_lookback, mother_high
+            )
+            if failed_breakout:
+                self._scan_stats["failed_breakout_history"] += 1
+                logger.debug(
+                    f"{symbol}: Recent failed breakout detected"
+                )
+                return None
+
+        # ════════════════════════════════════════════════════════════
+        # VOLUME CONFIRMATION (original logic)
+        # ════════════════════════════════════════════════════════════
         mother_abs_idx = len(df) + mother_idx
         if mother_abs_idx < 10:
             self._scan_stats["volume_rejected"] += 1
             return None
 
         mother_volume = float(df.iloc[mother_idx]["volume"])
-        prev_10_avg_vol = float(
-            df["volume"].iloc[
-                mother_abs_idx - 10: mother_abs_idx
-            ].mean()
-        )
-        mother_vol_ratio = (
-            mother_volume / prev_10_avg_vol
-            if prev_10_avg_vol > 0
-            else 0
-        )
+        prev_10_avg_vol = float(df["volume"].iloc[mother_abs_idx - 10: mother_abs_idx].mean())
+        mother_vol_ratio = mother_volume / prev_10_avg_vol if prev_10_avg_vol > 0 else 0
+        
         if mother_vol_ratio < self.mother_vol_multiplier:
             self._scan_stats["volume_rejected"] += 1
             return None
 
-        # 5b. Breakout candle volume > multiplier x 20-day avg
         vol_r = volume_ratio(df["volume"], 20)
         breakout_vol_ratio = float(vol_r.iloc[-1])
+        
         if breakout_vol_ratio < self.breakout_vol_multiplier:
             self._scan_stats["volume_rejected"] += 1
             return None
 
-        # ============================================================
-        # STEP 6: Entry, Target, Stop Loss Calculation
-        # ============================================================
+        # ════════════════════════════════════════════════════════════
+        # ENTRY, TARGET, STOP LOSS (original logic)
+        # ════════════════════════════════════════════════════════════
         entry_price = round(breakout_close, 2)
-
-        # Check breakout isn't overextended beyond Mother High
-        break_distance = (
-            (breakout_close - mother_high) / mother_high * 100
-        )
-        if break_distance > self.max_entry_buffer_pct:
-            self._scan_stats["no_pattern"] += 1
-            return None
-
-        # Target = entry + target_pct%
-        target_price = round(
-            entry_price * (1 + self.target_pct / 100), 2
-        )
-
-        # Stop Loss logic:
-        # Option A: Fixed percentage SL
-        fixed_sl = round(
-            entry_price * (1 - self.stop_loss_pct / 100), 2
-        )
-
-        # Option B: Mother Low SL (traditional approach)
+        target_price = round(entry_price * (1 + self.target_pct / 100), 2)
+        
+        fixed_sl = round(entry_price * (1 - self.stop_loss_pct / 100), 2)
         mother_low_sl = round(mother_low, 2)
-
-        # Use the TIGHTER (higher) stop loss - less risk
+        
         if self.use_mother_low_sl and mother_low_sl > fixed_sl:
             stop_loss = mother_low_sl
             sl_method = "mother_low"
         else:
             stop_loss = fixed_sl
             sl_method = f"fixed_{self.stop_loss_pct}pct"
-
-        # Max SL cap - reject if SL distance is too wide
-        sl_distance_pct = (
-            abs(entry_price - stop_loss) / entry_price * 100
-        )
+        
+        sl_distance_pct = abs(entry_price - stop_loss) / entry_price * 100
+        
         if sl_distance_pct > self.max_stop_loss_pct:
             self._scan_stats["sl_too_wide"] += 1
             return None
-
-        # Calculate actual R:R
+        
         risk = entry_price - stop_loss
         reward = target_price - entry_price
         if risk <= 0:
@@ -221,61 +262,76 @@ class MotherCandleV2Strategy(BaseStrategy):
             return None
         rr_ratio = round(reward / risk, 2)
 
-        # ============================================================
-        # Build indicator details for alert
-        # ============================================================
+        # ════════════════════════════════════════════════════════════
+        # BUILD SIGNAL (enhanced with new filters)
+        # ════════════════════════════════════════════════════════════
         indicator_details = {
             "mother_candle": {
                 "passed": True,
                 "mother_high": round(mother_high, 2),
                 "mother_low": round(mother_low, 2),
-                "mother_range": round(
-                    mother_high - mother_low, 2
-                ),
+                "mother_range": round(mother_high - mother_low, 2),
                 "baby_count": baby_count,
                 "days_consolidation": baby_count,
-                "mother_position": (
-                    f"{abs(mother_idx)} candles ago"
-                ),
+                "mother_position": f"{abs(mother_idx)} candles ago",
             },
             "fresh_breakout": {
                 "passed": True,
                 "breakout_close": round(breakout_close, 2),
                 "mother_high": round(mother_high, 2),
-                "break_amount": round(
-                    breakout_close - mother_high, 2
-                ),
-                "break_pct": round(break_distance, 2),
+                "break_amount": round(breakout_close - mother_high, 2),
+                "break_pct": round(breakout_strength_pct, 2),
             },
             "mother_volume": {
                 "passed": True,
-                "mother_vol_ratio": round(
-                    mother_vol_ratio, 2
-                ),
+                "mother_vol_ratio": round(mother_vol_ratio, 2),
                 "threshold": self.mother_vol_multiplier,
             },
             "breakout_volume": {
                 "passed": True,
-                "breakout_vol_ratio": round(
-                    breakout_vol_ratio, 2
-                ),
+                "breakout_vol_ratio": round(breakout_vol_ratio, 2),
                 "threshold": self.breakout_vol_multiplier,
+            },
+            "trend_filter": {
+                "passed": True,
+                "price": round(last_close, 2),
+                "ema": round(last_ema, 2) if self.require_uptrend else "N/A",
+                "price_vs_ema_pct": round(price_vs_ema_pct, 2) if self.require_uptrend else "N/A",
+            },
+            "volatility": {
+                "passed": True,
+                "atr_pct": round(atr_pct, 2),
+                "min_required": self.min_atr_pct,
             },
         }
 
-        # Confidence calculation
-        # Base: pattern + volumes = 0.70
+        # Enhanced confidence calculation
         confidence = 0.70
+        
+        # Volume bonuses
         if breakout_vol_ratio >= 2.0:
             confidence += 0.10
+        if mother_vol_ratio >= 2.0:
+            confidence += 0.05
+        
+        # Pattern quality bonuses
         if baby_count >= 4:
             confidence += 0.05
         if baby_count >= 7:
             confidence += 0.05
-        if mother_vol_ratio >= 2.0:
+        
+        # NEW: Trend strength bonus
+        if self.require_uptrend and price_vs_ema_pct > 5:
             confidence += 0.05
+        
+        # NEW: Breakout strength bonus
+        if breakout_strength_pct >= 1.0:
+            confidence += 0.05
+        
+        # R:R bonus
         if rr_ratio >= 2.0:
             confidence += 0.05
+        
         confidence = min(confidence, 1.0)
 
         signal = TradingSignal(
@@ -288,8 +344,8 @@ class MotherCandleV2Strategy(BaseStrategy):
             target_price=target_price,
             stop_loss=stop_loss,
             priority=AlertPriority.HIGH,
-            indicators_met=4,
-            total_indicators=4,
+            indicators_met=6,  # Now 6 filters instead of 4
+            total_indicators=6,
             indicator_details=indicator_details,
             metadata={
                 "timeframe": self.timeframe,
@@ -297,59 +353,45 @@ class MotherCandleV2Strategy(BaseStrategy):
                 "baby_count": baby_count,
                 "mother_high": round(mother_high, 2),
                 "mother_low": round(mother_low, 2),
-                "mother_vol_ratio": round(
-                    mother_vol_ratio, 2
-                ),
-                "breakout_vol_ratio": round(
-                    breakout_vol_ratio, 2
-                ),
-                "sl_distance_pct": round(
-                    sl_distance_pct, 2
-                ),
+                "mother_vol_ratio": round(mother_vol_ratio, 2),
+                "breakout_vol_ratio": round(breakout_vol_ratio, 2),
+                "breakout_strength_pct": round(breakout_strength_pct, 2),
+                "sl_distance_pct": round(sl_distance_pct, 2),
                 "sl_method": sl_method,
                 "rr_ratio": rr_ratio,
                 "target_pct": self.target_pct,
-                "stop_loss_pct": round(
-                    sl_distance_pct, 2
-                ),
+                "stop_loss_pct": round(sl_distance_pct, 2),
+                "atr_pct": round(atr_pct, 2),
+                "trend_ema": round(last_ema, 2) if self.require_uptrend else None,
             },
         )
 
         logger.info(
             f"SIGNAL: {self.name} - {symbol} "
             f"| Babies: {baby_count} "
-            f"| Mother: {round(mother_high, 2)}"
-            f"-{round(mother_low, 2)} "
+            f"| Mother: {round(mother_high, 2)}-{round(mother_low, 2)} "
             f"| Entry: {entry_price} "
+            f"| Breakout: +{round(breakout_strength_pct, 2)}% "
             f"| Target: {target_price} (+{self.target_pct}%) "
             f"| SL: {stop_loss} (-{round(sl_distance_pct, 1)}%) "
             f"| R:R 1:{rr_ratio} "
             f"| Vol: {round(breakout_vol_ratio, 2)}x "
+            f"| ATR: {round(atr_pct, 2)}% "
             f"| Conf: {confidence:.0%}"
         )
 
         self._scan_stats["signals"] += 1
         return signal
 
-    def _discover_mother_candle(
-        self, df: pd.DataFrame
-    ) -> Optional[Dict[str, Any]]:
+    def _discover_mother_candle(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """
         Right-to-Left scan to find Mother Candle pattern.
-
-        Starts from the last candle (potential breakout) and scans
-        backward to find a large Mother Candle with all intermediate
-        candles (babies) strictly contained within it.
-
-        Returns:
-            Dict with pattern details or None if no valid pattern.
+        (Same as original - unchanged)
         """
         last_candle = df.iloc[-1]
         last_close = float(last_candle["close"])
         last_high = float(last_candle["high"])
 
-        # Scan backward: mother can be at -2 to -(max_lookback+1)
-        # Position -1 is the last candle (breakout candidate)
         for mother_offset in range(2, self.max_lookback + 2):
             if mother_offset >= len(df):
                 break
@@ -363,11 +405,7 @@ class MotherCandleV2Strategy(BaseStrategy):
             if m_range <= 0 or m_low <= 0:
                 continue
 
-            # ──────────────────────────────────────────────
-            # STEP 1: Mother Range Validation
-            # Mother range must be > multiplier x avg range
-            # of the 5 candles before it
-            # ──────────────────────────────────────────────
+            # Mother Range Validation
             mother_abs_idx = len(df) + mother_pos
             if mother_abs_idx < 5:
                 continue
@@ -378,36 +416,25 @@ class MotherCandleV2Strategy(BaseStrategy):
                 if idx < 0:
                     break
                 c = df.iloc[idx]
-                pre_mother_ranges.append(
-                    float(c["high"]) - float(c["low"])
-                )
+                pre_mother_ranges.append(float(c["high"]) - float(c["low"]))
 
             if not pre_mother_ranges:
                 continue
 
-            avg_pre_range = (
-                sum(pre_mother_ranges) / len(pre_mother_ranges)
-            )
+            avg_pre_range = sum(pre_mother_ranges) / len(pre_mother_ranges)
             if avg_pre_range <= 0:
                 continue
 
-            if m_range < (
-                self.mother_range_multiplier * avg_pre_range
-            ):
+            if m_range < (self.mother_range_multiplier * avg_pre_range):
                 continue
 
-            # ──────────────────────────────────────────────
-            # STEP 2: Baby Candle Strict Containment
-            # All candles between mother and last must be
-            # inside Mother's H/L range (with small tolerance)
-            # ──────────────────────────────────────────────
+            # Baby Candle Strict Containment
             baby_start = mother_pos + 1
             baby_count = mother_offset - 2
 
             if baby_count < self.min_babies:
                 continue
 
-            # Tolerance: allow tiny wick breach
             tolerance = m_range * (self.baby_tolerance_pct / 100)
             upper_limit = m_high + tolerance
             lower_limit = m_low - tolerance
@@ -425,11 +452,7 @@ class MotherCandleV2Strategy(BaseStrategy):
             if not all_inside:
                 continue
 
-            # ──────────────────────────────────────────────
-            # STEP 3: Fresh Breakout Validation
-            # No baby candle may have closed above Mother High
-            # Only the last candle should break out
-            # ──────────────────────────────────────────────
+            # Fresh Breakout Validation
             old_breakout = False
             for j in range(baby_start, -1):
                 baby_close = float(df.iloc[j]["close"])
@@ -444,9 +467,6 @@ class MotherCandleV2Strategy(BaseStrategy):
             if last_close <= m_high:
                 continue
 
-            # ────────────────────────
-            # VALID PATTERN FOUND
-            # ────────────────────────
             return {
                 "mother_high": m_high,
                 "mother_low": m_low,
@@ -455,9 +475,54 @@ class MotherCandleV2Strategy(BaseStrategy):
                 "baby_count": baby_count,
                 "breakout_close": last_close,
                 "avg_pre_range": round(avg_pre_range, 2),
-                "range_multiplier": round(
-                    m_range / avg_pre_range, 2
-                ),
+                "range_multiplier": round(m_range / avg_pre_range, 2),
             }
 
         return None
+
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
+        """Calculate Average True Range."""
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=period).mean()
+        
+        return float(atr.iloc[-1]) if len(atr) > 0 else 0.0
+
+    def _has_recent_failed_breakout(
+        self, df: pd.DataFrame, lookback: int, threshold: float
+    ) -> bool:
+        """
+        Check if there were recent failed breakouts above threshold.
+        
+        A failed breakout is when:
+        - A candle closed above threshold
+        - But then fell back below threshold in next 1-3 candles
+        """
+        if len(df) < lookback + 5:
+            return False
+        
+        recent_candles = df.iloc[-(lookback + 1):-1]  # Exclude last candle
+        
+        for i in range(len(recent_candles) - 3):
+            candle = recent_candles.iloc[i]
+            close = float(candle["close"])
+            
+            # Did this candle close above threshold?
+            if close > threshold:
+                # Check next 1-3 candles - did they fall back below?
+                for j in range(1, min(4, len(recent_candles) - i)):
+                    next_candle = recent_candles.iloc[i + j]
+                    next_close = float(next_candle["close"])
+                    
+                    if next_close < threshold:
+                        # Failed breakout detected
+                        return True
+        
+        return False
