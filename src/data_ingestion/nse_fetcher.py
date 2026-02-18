@@ -312,7 +312,7 @@ class NSEFetcher(BaseFetcher):
             params=params,
             auth_failure_handler=self._refresh_session,
         )
-        print(f"Index data for {index}: {data}")
+        # print(f"Index data for {index}: {data}")
         if data and "data" in data:
             return [
                 stock["symbol"]
