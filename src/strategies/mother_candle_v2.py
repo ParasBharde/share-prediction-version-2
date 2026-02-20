@@ -363,6 +363,9 @@ class MotherCandleV2Strategy(BaseStrategy):
                 "stop_loss_pct": round(sl_distance_pct, 2),
                 "atr_pct": round(atr_pct, 2),
                 "trend_ema": round(last_ema, 2) if self.require_uptrend else None,
+                # Chart visualizer indices (negative offsets from end of df)
+                "mother_start_idx": mother_idx,  # e.g. -7 → mother candle
+                "mother_end_idx": -2,             # last baby candle (day before breakout)
             },
         )
 

@@ -19,6 +19,7 @@ Fallbacks:
 """
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -105,9 +106,17 @@ class TelegramBot:
         message: str,
         priority: str = AlertPriority.MEDIUM.value,
         inline_buttons: Optional[List[Dict[str, str]]] = None,
+        image_path: Optional[str] = None,
     ) -> bool:
         """
-        Send an alert message to Telegram with optional inline buttons.
+        Send an alert message to Telegram with optional inline buttons
+        and an optional chart image attachment.
+
+        When ``image_path`` is provided and the file exists, the alert is
+        delivered as a photo (``send_photo``) with the message as the
+        caption.  Otherwise a plain text message is sent (``send_message``).
+        Telegram captions are limited to 1024 characters; longer messages
+        are automatically truncated.
 
         Retries up to MAX_RETRIES times with exponential backoff on
         transient failures. Failed messages are queued for later retry.
@@ -119,6 +128,8 @@ class TelegramBot:
                 ``text`` and ``callback_data``.  Example::
 
                     [{"text": "View Chart", "callback_data": "chart_RELIANCE"}]
+            image_path: Optional filesystem path to a PNG/JPEG chart image.
+                If the file exists the alert is sent as a photo.
 
         Returns:
             True if the message was delivered successfully, False otherwise.
@@ -133,17 +144,34 @@ class TelegramBot:
         if inline_buttons and TELEGRAM_AVAILABLE:
             reply_markup = self._build_inline_keyboard(inline_buttons)
 
+        # Determine delivery mode
+        send_as_photo = bool(
+            image_path and os.path.isfile(image_path)
+        )
+
         last_error: Optional[Exception] = None
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                await self._bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message,
-                    parse_mode="Markdown",
-                    reply_markup=reply_markup,
-                    disable_web_page_preview=True,
-                )
+                if send_as_photo:
+                    # Telegram caption limit is 1 024 characters
+                    caption = message[:1024]
+                    with open(image_path, "rb") as photo_file:
+                        await self._bot.send_photo(
+                            chat_id=self.chat_id,
+                            photo=photo_file,
+                            caption=caption,
+                            parse_mode="Markdown",
+                            reply_markup=reply_markup,
+                        )
+                else:
+                    await self._bot.send_message(
+                        chat_id=self.chat_id,
+                        text=message,
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=True,
+                    )
 
                 alert_sent_counter.labels(
                     priority=priority,
@@ -155,6 +183,7 @@ class TelegramBot:
                     extra={
                         "priority": priority,
                         "attempt": attempt,
+                        "with_image": send_as_photo,
                     },
                 )
                 return True
@@ -204,7 +233,7 @@ class TelegramBot:
             channel="telegram",
         ).inc()
 
-        self._enqueue_failed(message, priority, inline_buttons, last_error)
+        self._enqueue_failed(message, priority, inline_buttons, last_error, image_path)
 
         logger.error(
             "Failed to send alert after all retries",
@@ -370,6 +399,7 @@ class TelegramBot:
         priority: str,
         inline_buttons: Optional[List[Dict[str, str]]],
         error: Optional[Exception],
+        image_path: Optional[str] = None,
     ) -> None:
         """
         Queue a failed message for later retry.
@@ -379,11 +409,13 @@ class TelegramBot:
             priority: Alert priority.
             inline_buttons: Optional inline button definitions.
             error: The exception that caused delivery failure.
+            image_path: Optional chart image path that was attached.
         """
         self._failed_queue.append({
             "message": message,
             "priority": priority,
             "inline_buttons": inline_buttons,
+            "image_path": image_path,
             "error": str(error) if error else None,
             "queued_at": datetime.now(timezone.utc).isoformat(),
         })

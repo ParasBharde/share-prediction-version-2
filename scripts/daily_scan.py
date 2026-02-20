@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.alerts.alert_deduplicator import AlertDeduplicator
 from src.alerts.alert_formatter import AlertFormatter
+from src.utils.visualizer import ChartVisualizer
 
 try:
     from src.alerts.telegram_bot import TelegramBot
@@ -204,6 +205,7 @@ async def run_daily_scan(
         fallback_manager = FallbackManager()
         data_validator = DataValidator()
         alert_formatter = AlertFormatter()
+        visualizer = ChartVisualizer()
 
         # Initialize Redis-dependent components (graceful if Redis is down)
         redis_handler = RedisHandler()
@@ -274,6 +276,9 @@ async def run_daily_scan(
             "signals_found": 0,
         }
 
+        # Maps symbol -> temp chart image path (generated while df is in scope)
+        chart_paths: dict = {}
+
         for i in range(0, len(stock_list), chunk_size):
             chunk = stock_list[i: i + chunk_size]
             chunk_num = i // chunk_size + 1
@@ -336,6 +341,13 @@ async def run_daily_scan(
                                 f"target={sig.target_price:.2f} "
                                 f"SL={sig.stop_loss:.2f}"
                             )
+                            # Generate chart while df is still in scope
+                            if symbol not in chart_paths:
+                                temp_path = f"/tmp/chart_{symbol}.png"
+                                if visualizer.generate_pattern_chart(
+                                    df, sig, temp_path
+                                ):
+                                    chart_paths[symbol] = temp_path
                     all_signals.extend(signals)
                     results["stocks_scanned"] += 1
 
@@ -471,10 +483,15 @@ async def run_daily_scan(
                         signal_dict
                     )
 
+                    # Attach chart image when available
+                    chart_path = chart_paths.get(signal.symbol)
+
                     # Send via Telegram (or log if not configured)
                     if telegram:
                         sent = await telegram.send_alert(
-                            message, signal.priority.value
+                            message,
+                            signal.priority.value,
+                            image_path=chart_path,
                         )
                     else:
                         logger.info(
@@ -487,6 +504,13 @@ async def run_daily_scan(
                             signal.symbol, signal_strategy
                         )
                         results["alerts_sent"] += 1
+
+                        # Clean up temp chart file after successful delivery
+                        if chart_path and os.path.isfile(chart_path):
+                            try:
+                                os.remove(chart_path)
+                            except OSError:
+                                pass
 
                 except Exception as e:
                     logger.error(
