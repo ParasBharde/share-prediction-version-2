@@ -35,6 +35,10 @@ from src.strategies.options_oi_breakout import OptionsOIBreakoutStrategy
 from src.strategies.options_vwap_supertrend import OptionsVWAPSupertrendStrategy
 from src.strategies.options_pcr_sentiment import OptionsPCRStrategy
 from src.strategies.mother_candle_v2 import MotherCandleV2Strategy
+from src.strategies.darvas_box import DarvasBoxStrategy
+from src.strategies.flag_pattern import FlagPatternStrategy
+from src.strategies.symmetrical_triangle import SymmetricalTriangleStrategy
+from src.strategies.descending_channel import DescendingChannelStrategy
 from src.utils.config_loader import load_strategy_config
 from src.utils.validators import validate_strategy_config
 
@@ -52,6 +56,11 @@ STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {
     "Options VWAP Supertrend": OptionsVWAPSupertrendStrategy,
     "Options PCR Sentiment": OptionsPCRStrategy,
     "Mother Candle V2": MotherCandleV2Strategy,
+    # ── BTST Suite ───────────────────────────────────────────────────
+    "Darvas Box": DarvasBoxStrategy,
+    "Flag Pattern": FlagPatternStrategy,
+    "Symmetrical Triangle": SymmetricalTriangleStrategy,
+    "Descending Channel": DescendingChannelStrategy,
 }
 
 # Config directory

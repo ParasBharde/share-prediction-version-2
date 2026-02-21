@@ -17,9 +17,13 @@ scanning:
   signal_type_filter: "BUY"  # Options: BUY, SELL, BOTH
 
   # Scanning schedule (IST)
+  # ── BTST Timing Rationale ─────────────────────────────────────────────────
+  # Scan begins at 15:15 IST so 2700+ stocks (NIFTY 500 + Midcap + Smallcap)
+  # are processed in time.  Signals are ready by ~15:25, giving a 5-minute
+  # window to place BTST orders before the 15:30 market close.
   schedule:
     enabled: true
-    time: "15:35"  # After market close (3:30 PM + 5 min buffer)
+    time: "15:15"  # BTST window: signals ready by 15:25, orders before 15:30
     weekdays: [0, 1, 2, 3, 4]  # Monday=0, Friday=4
 
   # Strategy selection

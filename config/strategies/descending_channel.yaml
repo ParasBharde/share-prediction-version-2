@@ -1,0 +1,105 @@
+# Descending Channel Breakout Strategy
+# Detects short-term descending channels inside a primary uptrend.
+# Signals BUY on breakout above the upper channel line (end of pullback).
+#
+# Edge: Stocks correcting inside a channel within a longer uptrend offer
+# a low-risk entry.  The channel breakout marks institutional re-accumulation
+# and the resumption of the primary trend — ideal for BTST.
+
+strategy:
+  name: "Descending Channel"
+  version: "1.0"
+  enabled: true
+  mode: "daily"
+  priority: 6
+  description: >
+    Identifies stocks in a short-term descending channel (series of lower
+    highs and lower lows) while the primary trend (50 EMA) is still up.
+    Signals BUY when price breaks out above the upper channel resistance
+    line, indicating the corrective phase has ended.
+
+  params:
+    # ── Channel Detection ─────────────────────────────────────────────────
+    channel_lookback: 30          # Candles to analyse for the channel
+    min_pivot_points: 2           # Minimum pivots on each channel line
+    pivot_order: 2                # Local high/low detection sensitivity
+    max_channel_slope: -0.05      # Upper line must slope downward (bearish channel)
+    min_channel_slope: -5.0       # Not too steep (not a crash)
+
+    # ── Trendline Quality ─────────────────────────────────────────────────
+    min_r_squared: 0.65           # Regression fit quality
+
+    # ── Volume ────────────────────────────────────────────────────────────
+    breakout_vol_multiplier: 1.3
+    vol_avg_period: 20
+
+    # ── Trend Filter (primary) ────────────────────────────────────────────
+    require_uptrend: true
+    trend_ema_period: 50          # Primary uptrend filter
+
+    # ── Target & Stop Loss ────────────────────────────────────────────────
+    target_pct: 7.0
+    stop_loss_pct: 3.0
+    max_stop_loss_pct: 5.0
+    use_lower_channel_sl: true    # SL at lower channel line at breakout bar
+
+data:
+  timeframe: "1D"
+  lookback_bars: 200
+
+filters:
+  market_cap_min: 500
+  avg_volume_min: 100000
+  price_min: 30
+  price_max: 10000
+
+indicators:
+  - name: "Descending Channel Pattern"
+    type: "price_pattern"
+    params:
+      min_pivots: 2
+    weight: 0.40
+
+  - name: "Upper Line Breakout"
+    type: "price_pattern"
+    params:
+      confirm_close: true
+    weight: 0.35
+
+  - name: "Volume Confirmation"
+    type: "volume_analysis"
+    params:
+      min_ratio: 1.3
+    weight: 0.25
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.65
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "configurable"
+    default_percent: 3.0
+    max_percent: 5.0
+  target:
+    type: "fixed_percent"
+    percent: 7.0
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2026-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.55
+  min_sharpe_ratio: 1.5
+  max_drawdown: 15
+
+alerts:
+  enabled: true
+  priority: "HIGH"
