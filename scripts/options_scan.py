@@ -1,30 +1,37 @@
 """
-NSE OPTIONS SCANNER - Intraday Options Trading
+Options Trading Scanner
 
-WHAT THIS DOES:
-- Scans NIFTY, BANK NIFTY, FIN NIFTY options
-- Finds high-probability option trades (Calls/Puts)
-- Uses Delta, IV, OI data for entry/exit
-- Supports 0DTE, weekly, monthly expiries
+Purpose:
+    Scans NIFTY/BANKNIFTY for options trading signals.
+    Uses OI analysis, VWAP+Supertrend, and PCR sentiment strategies.
+    Fetches option chain data from NSE and 5m candles from Yahoo.
+    Generates annotated chart images and sends them to Telegram.
 
-STRATEGIES:
-1. Trend Following (buy ITM/ATM when trending)
-2. Breakout Trades (buy ATM on strong moves)
-3. Mean Reversion (sell OTM premium)
-4. Volatility Crush (sell after high IV)
+Usage:
+    # Scan NIFTY options (single run)
+    python scripts/options_scan.py --symbol NIFTY
 
-USAGE:
-    # Scan all indices for Call/Put opportunities
-    python scripts/options_scan.py --indices BANKNIFTY NIFTY FINNIFTY
-    
-    # Only Bank Nifty, only Calls
-    python scripts/options_scan.py --indices BANKNIFTY --type CE
-    
+    # Scan BANKNIFTY options
+    python scripts/options_scan.py --symbol BANKNIFTY
+
+    # Scan both indices
+    python scripts/options_scan.py --symbol NIFTY --symbol BANKNIFTY
+
     # Auto-repeat every 5 minutes
-    python scripts/options_scan.py --indices BANKNIFTY --repeat 5 --telegram
-    
-    # 0DTE (same day expiry) only
-    python scripts/options_scan.py --indices BANKNIFTY --expiry 0DTE
+    python scripts/options_scan.py --symbol NIFTY --repeat 5
+
+    # With Telegram alerts + chart images
+    python scripts/options_scan.py --symbol NIFTY --telegram
+
+    # Dry run (print but don't send Telegram)
+    python scripts/options_scan.py --symbol NIFTY --dry-run
+
+    # Custom chart output dir (default /tmp)
+    python scripts/options_scan.py --symbol NIFTY --telegram --chart-dir ./charts/options
+
+Environment:
+    TELEGRAM_BOT_TOKEN   — bot token
+    TELEGRAM_CHAT_ID     — target chat / channel
 """
 
 import argparse
@@ -45,12 +52,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import numpy as np
 
-# Import NSE Python functions
-try:
-    from nsepython import nse_optionchain_scrapper
-except ImportError:
-    print("ERROR: nsepython not installed. Run: pip install nsepython")
-    sys.exit(1)
+from src.alerts.alert_formatter import AlertFormatter
+from src.data_ingestion.option_chain_fetcher import OptionChainFetcher
+from src.monitoring.logger import get_logger
+from src.strategies.base_strategy import TradingSignal
+from src.strategies.strategy_loader import STRATEGY_REGISTRY
+from src.utils.config_loader import load_strategy_config
+from src.utils.visualizer import ChartVisualizer
 
 try:
     from src.alerts.telegram_bot import TelegramBot
@@ -95,9 +103,38 @@ LOT_SIZES = {
     "MIDCPNIFTY": 50,
 }
 
-# ============================================================================
-# OPTIONS DATA FETCHING
-# ============================================================================
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Options Trading Scanner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--symbol", type=str, action="append", default=[],
+        help="Index symbol (NIFTY, BANKNIFTY). Can specify multiple."
+    )
+    parser.add_argument(
+        "--interval", type=str, default="5m",
+        choices=["5m", "15m"],
+        help="Candle interval (default: 5m)"
+    )
+    parser.add_argument(
+        "--repeat", type=int, default=0,
+        help="Auto-repeat every N minutes (0=once)"
+    )
+    parser.add_argument(
+        "--telegram", action="store_true",
+        help="Send alerts + chart images via Telegram"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print signals but do NOT send Telegram"
+    )
+    parser.add_argument(
+        "--chart-dir", type=str, default="/tmp",
+        metavar="DIR",
+        help="Directory to save chart PNG files (default: /tmp)"
+    )
+    return parser.parse_args()
 
 def get_spot_price(index: str) -> float:
     """
@@ -648,118 +685,212 @@ def format_telegram_signal(signal: Dict) -> str:
     )
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="NSE Options Scanner")
-    parser.add_argument(
-        "--indices",
-        nargs="+",
-        default=["BANKNIFTY"],
-        choices=["NIFTY", "BANKNIFTY", "FINNIFTY"],
-        help="Indices to scan (space-separated)"
-    )
-    parser.add_argument(
-        "--type",
-        type=str,
-        default="BOTH",
-        choices=["CE", "PE", "BOTH"],
-        help="Option type: CE (calls), PE (puts), or BOTH"
-    )
-    parser.add_argument(
-        "--expiry",
-        type=str,
-        default="weekly",
-        choices=["0DTE", "weekly", "monthly", "all"],
-        help="Expiry filter"
-    )
-    parser.add_argument(
-        "--repeat",
-        type=int,
-        default=0,
-        help="Auto-repeat every N minutes (0=once)"
-    )
-    parser.add_argument(
-        "--telegram",
-        action="store_true",
-        help="Send alerts via Telegram"
-    )
-    return parser.parse_args()
+async def scan_options(
+    symbols: List[str],
+    interval: str,
+    strategies: list,
+    send_telegram: bool = False,
+    dry_run: bool = False,
+    chart_dir: str = "/tmp",
+) -> List[TradingSignal]:
+    """Scan indices for options trading signals with chart images."""
+    all_signals = []
+    oc_fetcher = OptionChainFetcher()
+    alert_formatter = AlertFormatter()
+    visualizer = ChartVisualizer()
+    Path(chart_dir).mkdir(parents=True, exist_ok=True)
 
-
-async def main():
-    args = parse_args()
-    
-    print(f"\n🚀 NSE OPTIONS SCANNER")
-    print(f"{'='*60}")
-    print(f"Indices  : {', '.join(args.indices)}")
-    print(f"Type     : {args.type}")
-    print(f"Expiry   : {args.expiry}")
-    print(f"{'='*60}")
-    
-    # Determine option types
-    if args.type == "BOTH":
-        option_types = ["CE", "PE"]
-    else:
-        option_types = [args.type]
-    
-    # Initialize Telegram
+    # Telegram setup
     telegram = None
-    if args.telegram:
+    if send_telegram and not dry_run:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         if TelegramBot and bot_token and chat_id:
             telegram = TelegramBot(bot_token, chat_id)
-    
-    # Scan function
-    def run_scan():
-        all_signals = []
-        
-        for index in args.indices:
-            signals = scan_index_options(index, option_types, args.expiry)
-            all_signals.extend(signals)
-        
-        # Display signals
-        if all_signals:
-            print(f"\n{'='*60}")
-            print(f"  ✅ FOUND {len(all_signals)} OPTION SIGNALS")
-            print(f"{'='*60}")
-            
-            for signal in all_signals:
-                output = format_signal_output(signal)
-                print(output)
-                
-                # Send Telegram
-                if telegram:
-                    msg = format_telegram_signal(signal)
-                    asyncio.create_task(telegram.send_alert(msg, "HIGH"))
-                    time.sleep(0.5)
+            logger.info("Telegram delivery enabled for options scan")
         else:
-            print(f"\n  No signals found")
-        
-        return len(all_signals)
-    
-    # Run once or repeat
+            logger.warning(
+                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — "
+                "signals will be logged only"
+            )
+    elif dry_run:
+        logger.info("Dry-run mode — Telegram delivery disabled")
+
+    print(f"\nOptions Scanner — {len(symbols)} index/indices, {len(strategies)} strategies")
+    print(f"Interval : {interval}  |  Chart dir: {chart_dir}")
+    print(f"{'='*55}")
+
+    for symbol in symbols:
+        symbol = symbol.upper()
+        print(f"\n  Scanning {symbol}...")
+
+        # 1. Fetch option chain
+        print("  Fetching option chain...")
+        option_chain = await oc_fetcher.fetch_option_chain(symbol)
+
+        if option_chain:
+            print(format_option_chain_summary(option_chain))
+        else:
+            print(f"  WARNING: Could not fetch option chain for {symbol}")
+            print("  (NSE may block requests. OI-based strategies will be skipped.)")
+            option_chain = {}
+
+        # 2. Fetch intraday price data
+        print(f"  Fetching {interval} candle data...")
+        df = fetch_index_data(symbol, interval)
+
+        if df is None or len(df) < 20:
+            print(f"  ERROR: Insufficient price data for {symbol}")
+            continue
+
+        print(
+            f"  Got {len(df)} candles, "
+            f"latest close: ₹{float(df['close'].iloc[-1]):,.2f}"
+        )
+
+        # 3. Build company_info with option chain
+        company_info = {
+            "name": symbol,
+            "symbol": symbol,
+            "market_cap": 0,
+            "last_price": float(df["close"].iloc[-1]),
+            "option_chain": option_chain,
+        }
+
+        # 4. Run strategies
+        for strategy in strategies:
+            try:
+                signal = strategy.scan(symbol, df, company_info)
+                if not signal:
+                    continue
+
+                all_signals.append(signal)
+
+                # ── Console output ─────────────────────────────────────
+                output = format_options_signal(signal)
+                print(output)
+
+                # ── Generate chart image ───────────────────────────────
+                chart_path = str(
+                    Path(chart_dir)
+                    / f"options_{symbol}_{signal.strategy_name.replace(' ', '_')}.png"
+                )
+                chart_saved = visualizer.save_signal_chart(df, signal, chart_path)
+
+                # ── Format Telegram message ────────────────────────────
+                signal_dict = signal.__dict__.copy() if hasattr(signal, "__dict__") else {}
+                # Prefer to_dict() if available
+                if hasattr(signal, "to_dict"):
+                    signal_dict = signal.to_dict()
+                # Ensure indicator_details top-level for formatter
+                if "indicator_details" not in signal_dict:
+                    signal_dict["indicator_details"] = signal.indicator_details
+                signal_dict["individual_signals"] = []  # no aggregation for options
+
+                tg_message = alert_formatter.format_options_signal(signal_dict)
+
+                # ── Send via Telegram ──────────────────────────────────
+                if telegram and not dry_run:
+                    await telegram.send_alert(
+                        tg_message,
+                        signal.priority.value,
+                        image_path=chart_path if chart_saved else None,
+                    )
+                elif dry_run:
+                    logger.info(
+                        f"[DRY-RUN] Options signal: {signal.symbol} "
+                        f"{signal.metadata.get('option_type', '')} "
+                        f"{signal.metadata.get('atm_strike', '')} "
+                        f"conf={signal.confidence:.0%}"
+                    )
+
+                # Cleanup chart after delivery
+                if chart_saved and telegram and not dry_run:
+                    try:
+                        os.remove(chart_path)
+                    except OSError:
+                        pass
+
+            except Exception as e:
+                logger.debug(f"{symbol}/{strategy.name}: {e}")
+
+    await oc_fetcher.close()
+    return all_signals
+
+
+async def main():
+    args = parse_args()
+
+    symbols = args.symbol if args.symbol else ["NIFTY"]
+
+    strategies = load_options_strategies()
+    if not strategies:
+        print("Error: No options strategies loaded")
+        sys.exit(1)
+
+    print(f"\nStrategies: {', '.join(s.name for s in strategies)}")
+
     if args.repeat > 0:
-        print(f"\n🔄 AUTO-REPEAT: every {args.repeat} min | Ctrl+C to stop\n")
+        print(f"\nAUTO-REPEAT: Scanning every {args.repeat} minutes")
+        print("Press Ctrl+C to stop\n")
+
         scan_count = 0
         
         while True:
             scan_count += 1
-            print(f"\n{'#'*60}")
-            print(f"  SCAN #{scan_count} | {datetime.now(IST).strftime('%H:%M:%S IST')}")
-            print(f"{'#'*60}")
-            
-            count = run_scan()
-            
-            print(f"\n  Scan complete: {count} signals")
-            print(f"  Next scan in {args.repeat} min...")
-            
+            print(f"\n{'#'*55}")
+            print(
+                f"  OPTIONS SCAN #{scan_count} — "
+                f"{datetime.now().strftime('%H:%M:%S IST')}"
+            )
+            print(f"{'#'*55}")
+
+            signals = await scan_options(
+                symbols, args.interval, strategies,
+                send_telegram=args.telegram,
+                dry_run=args.dry_run,
+                chart_dir=args.chart_dir,
+            )
+
+            if signals:
+                print(f"\n  TOTAL SIGNALS: {len(signals)}")
+            else:
+                print(f"\n  No signals. Next scan in {args.repeat} min...")
+
             try:
                 time.sleep(args.repeat * 60)
             except KeyboardInterrupt:
                 print("\nStopped.")
                 break
     else:
-        run_scan()
+        signals = await scan_options(
+            symbols, args.interval, strategies,
+            send_telegram=args.telegram,
+            dry_run=args.dry_run,
+            chart_dir=args.chart_dir,
+        )
+
+        print(f"\n{'='*55}")
+        print(f"  OPTIONS SCAN SUMMARY")
+        print(f"{'='*55}")
+        print(f"  Indices Scanned : {len(symbols)}")
+        print(f"  Strategies      : {len(strategies)}")
+        print(f"  Signals Found   : {len(signals)}")
+
+        if signals:
+            for s in signals:
+                option_type = s.metadata.get("option_type", "")
+                atm = s.metadata.get("atm_strike", 0)
+                print(
+                    f"    {option_type}: {s.symbol} {atm} "
+                    f"| {s.strategy_name} "
+                    f"| Spot: Rs.{s.entry_price:,.2f} "
+                    f"| Conf: {s.confidence*100:.0f}%"
+                )
+        else:
+            print(f"  No options signals found. Market may be range-bound.")
+
+        print(f"{'='*55}")
 
 
 if __name__ == "__main__":

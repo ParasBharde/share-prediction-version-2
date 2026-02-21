@@ -283,6 +283,118 @@ class AlertFormatter:
 
         return "\n".join(lines) if lines else "  No indicators"
 
+    def format_options_signal(self, signal: Dict[str, Any]) -> str:
+        """
+        Format an options trading alert message (CE / PE).
+
+        Produces a concise, Telegram-friendly message that clearly shows:
+          - Whether to buy CE or PE and at which strike
+          - Spot price entry, target, and stop-loss
+          - PCR, OI levels, Supertrend direction (where available)
+          - Indicator checks (PASS/FAIL)
+          - Exit rule and confidence
+
+        Args:
+            signal: Signal dict from TradingSignal.to_dict() or equivalent.
+                    Must contain ``metadata`` with ``option_type`` and
+                    ``atm_strike``.
+
+        Returns:
+            Rendered alert string (≤4096 chars for Telegram).
+        """
+        from src.utils.time_helpers import now_ist
+
+        meta = signal.get("metadata", {})
+        option_type = meta.get("option_type", "")  # "BUY_CE" or "BUY_PE"
+        atm_strike = meta.get("atm_strike", 0)
+        symbol = signal.get("symbol", "UNKNOWN")
+        strategy = signal.get("strategy_name", "")
+
+        # Derive readable option label
+        if "CE" in option_type:
+            action_line = f"📗 BUY CALL (CE)  →  {symbol} {atm_strike} CE"
+            action_emoji = "📗"
+        elif "PE" in option_type:
+            action_line = f"📕 BUY PUT (PE)   →  {symbol} {atm_strike} PE"
+            action_emoji = "📕"
+        else:
+            action_line = f"📊 OPTIONS SIGNAL → {symbol}"
+            action_emoji = "📊"
+
+        entry = signal.get("entry_price", 0) or 0
+        target = signal.get("target_price", 0) or 0
+        sl = signal.get("stop_loss", 0) or 0
+        confidence = signal.get("confidence", 0)
+
+        risk = abs(entry - sl)
+        reward = abs(target - entry)
+        rr = round(reward / risk, 1) if risk > 0 else 0
+
+        # Key metadata lines
+        extra_lines: List[str] = []
+        if meta.get("pcr"):
+            pcr_val = meta["pcr"]
+            pcr_icon = (
+                "🟢" if pcr_val > 1.0
+                else "🔴" if pcr_val < 0.8
+                else "🟡"
+            )
+            extra_lines.append(f"  PCR            : {pcr_icon} {pcr_val:.3f}")
+        if meta.get("oi_resistance"):
+            extra_lines.append(
+                f"  OI Resistance  : ₹{meta['oi_resistance']:,} (max CE OI)"
+            )
+        if meta.get("oi_support"):
+            extra_lines.append(
+                f"  OI Support     : ₹{meta['oi_support']:,} (max PE OI)"
+            )
+        if meta.get("vwap_value"):
+            extra_lines.append(
+                f"  VWAP           : ₹{meta['vwap_value']:,.2f}"
+            )
+        if meta.get("supertrend_value"):
+            st_dir = meta.get("supertrend_direction", "")
+            st_icon = "🟢" if st_dir == "bullish" else "🔴"
+            extra_lines.append(
+                f"  Supertrend     : {st_icon} ₹{meta['supertrend_value']:,.2f}"
+            )
+        if meta.get("exit_rule"):
+            extra_lines.append(f"  Exit Rule      : {meta['exit_rule']}")
+        if meta.get("sentiment"):
+            sent = meta["sentiment"].upper()
+            extra_lines.append(f"  PCR Sentiment  : {sent}")
+
+        # Indicator summary
+        ind_summary = self._build_indicator_summary(signal)
+
+        lines = [
+            f"{'─'*38}",
+            f"{action_line}",
+            f"{'─'*38}",
+            f"  Strategy       : {strategy}",
+            f"  Spot Entry     : ₹{entry:,.2f}",
+            f"  Target (Spot)  : ₹{target:,.2f}",
+            f"  Stop Loss      : ₹{sl:,.2f}",
+            f"  R:R Ratio      : 1:{rr}",
+            f"  Confidence     : {confidence:.0f}%"
+            f"  ({signal.get('indicators_met', 'N/A')}/{signal.get('total_indicators', 'N/A')})",
+        ]
+        if extra_lines:
+            lines.append("")
+            lines.extend(extra_lines)
+
+        lines += [
+            "",
+            "  Indicators:",
+            ind_summary,
+            "",
+            f"  ⏰ {now_ist().strftime('%H:%M IST  %d %b %Y')}",
+            f"  🚀 ENTER NOW",
+            f"{'─'*38}",
+        ]
+
+        return "\n".join(lines)
+
     def format_sell_signal(self, signal_data: Dict[str, Any]) -> str:
         """
         Format a sell signal alert message.
