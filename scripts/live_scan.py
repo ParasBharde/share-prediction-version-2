@@ -25,10 +25,16 @@ import asyncio
 import os
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set
 import pytz
+
+# Suppress yfinance warnings about delisted stocks
+warnings.filterwarnings('ignore', message='.*possibly delisted.*')
+warnings.filterwarnings('ignore', message='.*No data found.*')
+warnings.filterwarnings('ignore', category=FutureWarning)
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -355,9 +361,14 @@ def check_higher_timeframe(symbol: str) -> Tuple[bool, str]:
         return True, "1H check disabled"
     
     try:
+        import io
+        import contextlib
+        
         yahoo_symbol = f"{symbol}{YAHOO_NSE_SUFFIX}"
-        ticker = yf.Ticker(yahoo_symbol)
-        df_1h = ticker.history(period="5d", interval="1h")
+        
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ticker = yf.Ticker(yahoo_symbol)
+            df_1h = ticker.history(period="5d", interval="1h")
         
         if df_1h.empty or len(df_1h) < 20:
             return True, "insufficient 1H data"
@@ -475,9 +486,15 @@ def check_gap(df: pd.DataFrame, symbol: str) -> Tuple[bool, str]:
 def check_daily_trend(symbol: str) -> Tuple[bool, str]:
     """Daily trend check."""
     try:
+        import io
+        import contextlib
+        
         yahoo_symbol = f"{symbol}{YAHOO_NSE_SUFFIX}"
-        ticker = yf.Ticker(yahoo_symbol)
-        df = ticker.history(period="60d", interval="1d")
+        
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ticker = yf.Ticker(yahoo_symbol)
+            df = ticker.history(period="60d", interval="1d")
+        
         if df.empty or len(df) < STRICT_FILTERS["daily_ema_period"]:
             return True, "daily check skipped"
         df.columns = [c.lower() for c in df.columns]
@@ -563,9 +580,15 @@ def fetch_intraday_data(symbol: str, interval: str = "15m") -> Optional[pd.DataF
     """Fetch intraday data."""
     yahoo_symbol = f"{symbol}{YAHOO_NSE_SUFFIX}"
     try:
-        ticker = yf.Ticker(yahoo_symbol)
-        period_map = {"5m": "60d", "15m": "60d", "30m": "60d", "1h": "730d"}
-        df = ticker.history(period=period_map.get(interval, "60d"), interval=interval)
+        # Suppress yfinance print statements
+        import io
+        import contextlib
+        
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ticker = yf.Ticker(yahoo_symbol)
+            period_map = {"5m": "60d", "15m": "60d", "30m": "60d", "1h": "730d"}
+            df = ticker.history(period=period_map.get(interval, "60d"), interval=interval)
+        
         if df.empty:
             return None
         df.columns = [c.lower() for c in df.columns]
@@ -704,7 +727,12 @@ async def scan_stocks(
 
     if time_quality == "avoid" and not bypass_time:
         print(f"\n  ⚠️  AVOID WINDOW - Skipping scan")
+        print(f"  (Use --bypass-time to scan anyway)")
         return []
+    
+    if time_quality == "avoid" and bypass_time:
+        print(f"\n  ⚠️  AVOID WINDOW - Scanning anyway (bypass mode)")
+
 
     for idx, symbol in enumerate(symbols, 1):
         try:

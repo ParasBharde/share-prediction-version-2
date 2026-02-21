@@ -15,8 +15,8 @@ strategy:
 
   params:
     # --- Pattern Detection ---
-    max_lookback: 40
-    min_baby_candles: 2
+    max_lookback: 20
+    min_baby_candles: 3
     mother_range_multiplier: 1.5
     baby_tolerance_pct: 0.1
 
