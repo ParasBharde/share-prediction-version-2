@@ -4,17 +4,31 @@ Daily Stock Scanning Script - FINAL VERSION FOR 2700+ STOCKS
 Purpose:
     Main entry point for the daily stock scan.
     Orchestrates data fetching, strategy execution,
-    signal generation, and alert delivery.
+    signal generation, chart visualization, and alert delivery.
+
+BTST Timing:
+    Scan starts at 15:15 IST (configured in config/system.yaml).
+    With 2700+ stocks processed in chunks of 50, signals are ready
+    by ~15:25 IST — a 5-minute window to place BTST orders before
+    the 15:30 market close.
 
 CRITICAL UPDATE:
     - Added multi-index fetching support
     - When universe="ALL", fetches from 3 indices and deduplicates
     - Gets 900+ unique stocks from archives (NIFTY 500 + MIDCAP + SMALLCAP)
-    
+
 Usage:
-    python scripts/daily_scan.py
-    python scripts/daily_scan.py --force  # Skip trading day check
+    python scripts/daily_scan.py                     # Full scan (all strategies)
+    python scripts/daily_scan.py --force             # Skip trading day check
+    python scripts/daily_scan.py --btst-only         # Run 4 BTST strategies only
+    python scripts/daily_scan.py --mother-v2-only    # Mother Candle V2 only
+    python scripts/daily_scan.py --strategies "Darvas Box" "Flag Pattern"
+    python scripts/daily_scan.py --test-symbol ICICIBANK
     FORCE_RUN=true python scripts/daily_scan.py
+
+BTST Strategy Names (use with --strategies or --btst-only):
+    "Darvas Box"          "Flag Pattern"
+    "Symmetrical Triangle"  "Descending Channel"
 
 Dependencies:
     - All src modules
@@ -99,6 +113,15 @@ def parse_args():
         help=(
             "Run only Mother Candle V2 strategy. "
             "Useful to replace standalone mother_candle_scan.py runs."
+        ),
+    )
+    parser.add_argument(
+        "--btst-only",
+        action="store_true",
+        help=(
+            "Run only the 4 BTST strategies: "
+            "Darvas Box, Flag Pattern, Symmetrical Triangle, "
+            "Descending Channel. Implies --force."
         ),
     )
     parser.add_argument(
@@ -344,7 +367,7 @@ async def run_daily_scan(
                             # Generate chart while df is still in scope
                             if symbol not in chart_paths:
                                 temp_path = f"/tmp/chart_{symbol}.png"
-                                if visualizer.generate_pattern_chart(
+                                if visualizer.save_signal_chart(
                                     df, sig, temp_path
                                 ):
                                     chart_paths[symbol] = temp_path
@@ -1021,6 +1044,18 @@ if __name__ == "__main__":
         logger.info(
             "mother-v2-only mode enabled: "
             "running only 'Mother Candle V2' strategy"
+        )
+
+    if args.btst_only:
+        strategy_filter = [
+            "Darvas Box",
+            "Flag Pattern",
+            "Symmetrical Triangle",
+            "Descending Channel",
+        ]
+        logger.info(
+            "btst-only mode enabled: running 4 BTST strategies "
+            "(Darvas Box, Flag Pattern, Symmetrical Triangle, Descending Channel)"
         )
 
     asyncio.run(

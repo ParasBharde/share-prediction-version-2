@@ -1,0 +1,116 @@
+# Bull Flag Pattern Strategy
+# Identifies a strong 'Pole' followed by a tight 'Flag' consolidation.
+# Signals BUY on breakout above the flag high.
+#
+# Edge: The Flag is caused by profit-booking after a strong move.  When
+# sellers exhaust and buyers re-enter (confirmed by volume), the original
+# momentum resumes quickly — making this one of the most reliable BTST
+# setups for the Indian market.
+
+strategy:
+  name: "Flag Pattern"
+  version: "1.0"
+  enabled: true
+  mode: "daily"
+  priority: 8          # Highest priority of the 4 BTST strategies
+  description: >
+    Detects Bull Flag patterns: a sharp 5%+ upward Pole (3–7 days) followed
+    by a tight rectangular Flag consolidation (3–7 days, max 50% retracement
+    of pole).  Signals BUY when price closes above the flag high with
+    elevated volume, projecting a measured move equal to the pole height.
+
+  params:
+    # ── Pole Detection ────────────────────────────────────────────────────
+    min_pole_gain_pct: 5.0        # Pole must gain at least 5%
+    min_pole_days: 3              # Pole spans at least 3 days
+    max_pole_days: 10             # Pole no longer than 10 days
+
+    # ── Flag Detection ────────────────────────────────────────────────────
+    min_flag_days: 3              # Flag consolidation minimum 3 days
+    max_flag_days: 10             # Flag consolidation maximum 10 days
+    max_flag_range_pct: 8.0       # Flag must be tight (< 8% range)
+    max_flag_retrace_pct: 50.0    # Flag retracement <= 50% of pole height
+
+    # ── Volume ────────────────────────────────────────────────────────────
+    breakout_vol_multiplier: 1.3
+    pole_vol_multiplier: 1.2      # Pole should have above-average volume
+    vol_avg_period: 20
+
+    # ── Trend Filter ──────────────────────────────────────────────────────
+    require_uptrend: true
+    trend_ema_period: 50
+
+    # ── Target & Stop Loss ────────────────────────────────────────────────
+    use_measured_move_target: true  # Target = flag_high + pole_height
+    target_pct: 8.0                 # Fallback fixed % target
+    stop_loss_pct: 3.0
+    max_stop_loss_pct: 5.0
+    use_flag_low_sl: true           # SL at flag low
+
+data:
+  timeframe: "1D"
+  lookback_bars: 200
+
+filters:
+  market_cap_min: 500
+  avg_volume_min: 100000
+  price_min: 30
+  price_max: 10000
+
+indicators:
+  - name: "Flag Pole"
+    type: "price_pattern"
+    params:
+      min_gain_pct: 5.0
+    weight: 0.35
+
+  - name: "Flag Consolidation"
+    type: "price_pattern"
+    params:
+      max_range_pct: 8.0
+    weight: 0.30
+
+  - name: "Breakout Above Flag High"
+    type: "price_pattern"
+    params:
+      confirm_close: true
+    weight: 0.20
+
+  - name: "Volume Confirmation"
+    type: "volume_analysis"
+    params:
+      min_ratio: 1.3
+    weight: 0.15
+
+signal_generation:
+  min_conditions_met: 4
+  confidence_threshold: 0.68
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "configurable"
+    default_percent: 3.0
+    max_percent: 5.0
+    use_flag_low: true
+  target:
+    type: "measured_move"         # Pole height projected from flag high
+    percent: 8.0                  # Fallback
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2026-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.58
+  min_sharpe_ratio: 1.8
+  max_drawdown: 12
+
+alerts:
+  enabled: true
+  priority: "HIGH"

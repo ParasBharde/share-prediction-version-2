@@ -46,6 +46,16 @@ DEFAULT_STRATEGY_WEIGHTS: Dict[str, float] = {
     "Options OI Breakout": 0.40,
     "Options VWAP Supertrend": 0.35,
     "Options PCR Sentiment": 0.30,
+    # ── BTST Suite ────────────────────────────────────────────────────
+    # Flag Pattern has the highest weight — strong momentum setup with
+    # a measured-move target and well-defined risk.
+    "Flag Pattern": 0.42,
+    # Darvas Box — proven institutional accumulation pattern.
+    "Darvas Box": 0.38,
+    # Triangle and Channel are pattern-regression strategies; slightly
+    # lower weight due to subjectivity in pivot selection.
+    "Symmetrical Triangle": 0.35,
+    "Descending Channel": 0.33,
 }
 
 

@@ -1,0 +1,101 @@
+# Darvas Box Breakout Strategy
+# Identifies price consolidation boxes and signals BUY on high-volume breakout.
+# Inspired by Nicolas Darvas' legendary "Box Theory" adapted for Indian markets.
+#
+# Edge: Consolidation zones act as coiled springs.  When price and volume
+# expand together above the ceiling, institutions are accumulating — giving
+# retail traders an early-entry BTST signal before the next leg up.
+
+strategy:
+  name: "Darvas Box"
+  version: "1.0"
+  enabled: true
+  mode: "daily"
+  priority: 7
+  description: >
+    Identifies price consolidation boxes (a ceiling held for 3+ days with
+    a defined floor) within an uptrend and signals BUY on a high-volume
+    breakout above the ceiling.  Stop-loss is placed at the box floor.
+    Optimized for BTST delivery — signal generated at 15:15 IST.
+
+  params:
+    # ── Box Detection ─────────────────────────────────────────────────────
+    max_lookback: 60          # Maximum candles to look back for a box
+    box_hold_days: 3          # Minimum days ceiling must hold (no new high)
+    max_box_depth_pct: 12.0   # Box floor must be within 12% of ceiling
+
+    # ── Volume ────────────────────────────────────────────────────────────
+    breakout_vol_multiplier: 1.5   # Breakout volume >= 1.5x 20-day average
+    vol_avg_period: 20
+
+    # ── Trend Filter ──────────────────────────────────────────────────────
+    require_uptrend: true
+    trend_ema_period: 50           # Price must be above 50 EMA
+
+    # ── Target & Stop Loss ────────────────────────────────────────────────
+    target_pct: 7.0
+    stop_loss_pct: 3.0             # Fixed % fallback SL
+    max_stop_loss_pct: 6.0         # Reject signal if SL would exceed this
+    use_box_bottom_sl: true        # Prefer box floor as SL over fixed %
+
+data:
+  timeframe: "1D"
+  lookback_bars: 200
+
+filters:
+  market_cap_min: 500              # Crores
+  avg_volume_min: 100000
+  price_min: 30
+  price_max: 10000
+
+indicators:
+  - name: "Darvas Box Pattern"
+    type: "price_pattern"
+    params:
+      min_hold_days: 3
+    weight: 0.40
+
+  - name: "Volume Breakout"
+    type: "volume_analysis"
+    params:
+      min_ratio: 1.5
+    weight: 0.35
+
+  - name: "Trend Filter"
+    type: "trend_analysis"
+    params:
+      ema_period: 50
+    weight: 0.25
+
+signal_generation:
+  min_conditions_met: 3
+  confidence_threshold: 0.65
+  signal_type: "BUY"
+
+risk_management:
+  stop_loss:
+    type: "configurable"
+    default_percent: 3.0
+    max_percent: 6.0
+    use_box_bottom: true
+  target:
+    type: "fixed_percent"
+    percent: 7.0
+  position_size:
+    type: "risk_based"
+    risk_per_trade_percent: 1
+  max_concurrent_positions: 5
+
+backtesting:
+  start_date: "2023-01-01"
+  end_date: "2026-01-31"
+  initial_capital: 100000
+  commission_percent: 0.03
+  slippage_percent: 0.10
+  min_win_rate: 0.55
+  min_sharpe_ratio: 1.5
+  max_drawdown: 15
+
+alerts:
+  enabled: true
+  priority: "HIGH"
