@@ -3,10 +3,10 @@
 
 strategy:
   name: "Options OI Breakout"
-  version: "1.0"
-  enabled: false
-  priority: 1
-  description: "OI support/resistance breakout for options trading"
+  version: "2.0"
+  enabled: true
+  priority: 3
+  description: "OI support/resistance multi-candle breakout with MACD confirmation"
 
 data:
   timeframe: "5m"
@@ -40,8 +40,11 @@ indicators:
 
 signal_generation:
   min_conditions_met: 3
-  confidence_threshold: 0.55
+  confidence_threshold: 0.60
   signal_type: "BOTH"
+  # Multi-candle OI breakout confirmation
+  confirm_bars_below: 2          # price must be below resistance for N bars before break
+  min_candle_strength: 0.55      # breakout candle close must be in top 55% of its range
 
 risk_management:
   stop_loss:

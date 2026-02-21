@@ -3,10 +3,10 @@
 
 strategy:
   name: "Options VWAP Supertrend"
-  version: "1.0"
-  enabled: false
-  priority: 1
-  description: "VWAP bias + Supertrend entry for options"
+  version: "2.0"
+  enabled: true
+  priority: 3
+  description: "VWAP bias + Supertrend flip entry with MACD confirmation for options"
 
 data:
   timeframe: "5m"
@@ -40,8 +40,13 @@ indicators:
 
 signal_generation:
   min_conditions_met: 3
-  confidence_threshold: 0.55
+  confidence_threshold: 0.60
   signal_type: "BOTH"
+  # Supertrend parameters
+  supertrend_period: 10
+  supertrend_multiplier: 3.0
+  # Time guard: skip first 15 min open + last 30 min (set true only for testing)
+  bypass_time_filter: false
 
 risk_management:
   stop_loss:

@@ -3,10 +3,10 @@
 
 strategy:
   name: "Options PCR Sentiment"
-  version: "1.0"
-  enabled: false
+  version: "2.0"
+  enabled: true
   priority: 2
-  description: "Put-Call Ratio sentiment analysis for options"
+  description: "PCR sentiment + VWAP + MACD alignment for options"
 
 data:
   timeframe: "5m"
@@ -34,14 +34,17 @@ indicators:
     type: "trend"
     weight: 0.15
 
-  - name: "RSI Confirmation"
+  - name: "MACD Momentum"
     type: "oscillator"
     weight: 0.15
 
 signal_generation:
   min_conditions_met: 3
-  confidence_threshold: 0.55
+  confidence_threshold: 0.60
   signal_type: "BOTH"
+  # Configurable PCR thresholds
+  bullish_pcr_threshold: 1.2      # PCR > this = bullish sentiment → BUY CE
+  bearish_pcr_threshold: 0.8      # PCR < this = bearish sentiment → BUY PE
 
 risk_management:
   stop_loss:

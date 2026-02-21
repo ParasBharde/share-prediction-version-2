@@ -42,6 +42,7 @@ from src.strategies.base_strategy import TradingSignal
 from src.strategies.strategy_loader import StrategyLoader, STRATEGY_REGISTRY
 from src.utils.config_loader import load_config, load_strategy_config
 from src.utils.constants import YAHOO_NSE_SUFFIX
+from src.utils.visualizer import ChartVisualizer
 
 try:
     from src.alerts.telegram_bot import TelegramBot
@@ -501,12 +502,26 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Ultra-Strict Intraday Scanner")
     parser.add_argument("--symbol", type=str)
     parser.add_argument("--watchlist", type=str)
-    parser.add_argument("--universe", type=str, choices=["NIFTY50", "NIFTY100", "NIFTY500", "ALL"])
-    parser.add_argument("--interval", type=str, default="15m", choices=["5m", "15m", "30m", "1h"])
+    parser.add_argument(
+        "--universe", type=str,
+        choices=["NIFTY50", "NIFTY100", "NIFTY500", "ALL"],
+    )
+    parser.add_argument(
+        "--interval", type=str, default="15m",
+        choices=["5m", "15m", "30m", "1h"],
+    )
     parser.add_argument("--repeat", type=int, default=0)
-    parser.add_argument("--telegram", action="store_true")
+    parser.add_argument(
+        "--telegram", action="store_true",
+        help="Send alerts + chart images via Telegram",
+    )
     parser.add_argument("--bypass-time", action="store_true")
     parser.add_argument("--min-confidence", type=float, default=1.0)
+    parser.add_argument(
+        "--chart-dir", type=str, default="/tmp",
+        metavar="DIR",
+        help="Directory to save chart PNGs (default: /tmp)",
+    )
     return parser.parse_args()
 
 
@@ -636,25 +651,30 @@ async def scan_stocks(
     min_confidence: float = 1.0,
     bypass_time: bool = False,
     nifty_trend: Tuple[float, str] = (0.0, "unknown"),
+    chart_dir: str = "/tmp",
 ) -> List[TradingSignal]:
     """
     ULTRA-STRICT SCAN with 15+ filters.
+    Generates annotated chart images for every signal and sends them to Telegram.
     """
     all_signals = []
     total = len(symbols)
-    
+    visualizer = ChartVisualizer()
+    import pathlib
+    pathlib.Path(chart_dir).mkdir(parents=True, exist_ok=True)
+
     # Detailed filter stats
     stats = {
         "scanned": 0,
         "no_data": 0,
-        
+
         # Existing filters
         "low_volume": 0,
         "bad_gap": 0,
         "daily_downtrend": 0,
         "low_confidence": 0,
         "nifty_blocked": 0,
-        
+
         # NEW filter rejections
         "weak_candle": 0,
         "low_vol_surge": 0,
@@ -663,7 +683,7 @@ async def scan_stocks(
         "near_sr": 0,
         "1h_misaligned": 0,
         "cooldown": 0,
-        
+
         "passed": 0,
     }
 
@@ -817,9 +837,28 @@ async def scan_stocks(
                     output = format_signal_output(signal, interval, filters_passed)
                     print(output)
 
+                    # Generate chart image for this signal
+                    chart_path = str(
+                        pathlib.Path(chart_dir)
+                        / f"live_{symbol}_{strategy.name.replace(' ', '_')}.png"
+                    )
+                    chart_saved = visualizer.save_signal_chart(
+                        df, signal, chart_path
+                    )
+
                     if telegram:
                         msg = format_telegram_signal(signal, interval, filters_passed)
-                        await telegram.send_alert(msg, signal.priority.value)
+                        await telegram.send_alert(
+                            msg,
+                            signal.priority.value,
+                            image_path=chart_path if chart_saved else None,
+                        )
+                        # Cleanup after successful delivery
+                        if chart_saved:
+                            try:
+                                os.remove(chart_path)
+                            except OSError:
+                                pass
 
                 except Exception as e:
                     logger.debug(f"{symbol}/{strategy.name}: {e}")
@@ -929,6 +968,7 @@ async def main():
                 min_confidence=args.min_confidence,
                 bypass_time=args.bypass_time,
                 nifty_trend=(nifty_pct, nifty_direction),
+                chart_dir=args.chart_dir,
             )
 
             if signals:

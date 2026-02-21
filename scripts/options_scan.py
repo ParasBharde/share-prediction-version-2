@@ -5,9 +5,10 @@ Purpose:
     Scans NIFTY/BANKNIFTY for options trading signals.
     Uses OI analysis, VWAP+Supertrend, and PCR sentiment strategies.
     Fetches option chain data from NSE and 5m candles from Yahoo.
+    Generates annotated chart images and sends them to Telegram.
 
 Usage:
-    # Scan NIFTY options
+    # Scan NIFTY options (single run)
     python scripts/options_scan.py --symbol NIFTY
 
     # Scan BANKNIFTY options
@@ -19,8 +20,18 @@ Usage:
     # Auto-repeat every 5 minutes
     python scripts/options_scan.py --symbol NIFTY --repeat 5
 
-    # With Telegram alerts
+    # With Telegram alerts + chart images
     python scripts/options_scan.py --symbol NIFTY --telegram
+
+    # Dry run (print but don't send Telegram)
+    python scripts/options_scan.py --symbol NIFTY --dry-run
+
+    # Custom chart output dir (default /tmp)
+    python scripts/options_scan.py --symbol NIFTY --telegram --chart-dir ./charts/options
+
+Environment:
+    TELEGRAM_BOT_TOKEN   — bot token
+    TELEGRAM_CHAT_ID     — target chat / channel
 """
 
 import argparse
@@ -36,11 +47,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import yfinance as yf
 
+from src.alerts.alert_formatter import AlertFormatter
 from src.data_ingestion.option_chain_fetcher import OptionChainFetcher
 from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import TradingSignal
 from src.strategies.strategy_loader import STRATEGY_REGISTRY
 from src.utils.config_loader import load_strategy_config
+from src.utils.visualizer import ChartVisualizer
 
 try:
     from src.alerts.telegram_bot import TelegramBot
@@ -58,7 +71,10 @@ INDEX_YAHOO_MAP = {
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Options Trading Scanner")
+    parser = argparse.ArgumentParser(
+        description="Options Trading Scanner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--symbol", type=str, action="append", default=[],
         help="Index symbol (NIFTY, BANKNIFTY). Can specify multiple."
@@ -74,7 +90,16 @@ def parse_args():
     )
     parser.add_argument(
         "--telegram", action="store_true",
-        help="Send alerts via Telegram"
+        help="Send alerts + chart images via Telegram"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print signals but do NOT send Telegram"
+    )
+    parser.add_argument(
+        "--chart-dir", type=str, default="/tmp",
+        metavar="DIR",
+        help="Directory to save chart PNG files (default: /tmp)"
     )
     return parser.parse_args()
 
@@ -200,21 +225,34 @@ async def scan_options(
     interval: str,
     strategies: list,
     send_telegram: bool = False,
+    dry_run: bool = False,
+    chart_dir: str = "/tmp",
 ) -> List[TradingSignal]:
-    """Scan indices for options trading signals."""
+    """Scan indices for options trading signals with chart images."""
     all_signals = []
     oc_fetcher = OptionChainFetcher()
+    alert_formatter = AlertFormatter()
+    visualizer = ChartVisualizer()
+    Path(chart_dir).mkdir(parents=True, exist_ok=True)
 
-    # Telegram
+    # Telegram setup
     telegram = None
-    if send_telegram:
+    if send_telegram and not dry_run:
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         if TelegramBot and bot_token and chat_id:
             telegram = TelegramBot(bot_token, chat_id)
+            logger.info("Telegram delivery enabled for options scan")
+        else:
+            logger.warning(
+                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set — "
+                "signals will be logged only"
+            )
+    elif dry_run:
+        logger.info("Dry-run mode — Telegram delivery disabled")
 
-    print(f"\nOptions Scanner - {len(symbols)} indices, {len(strategies)} strategies")
-    print(f"Interval: {interval}")
+    print(f"\nOptions Scanner — {len(symbols)} index/indices, {len(strategies)} strategies")
+    print(f"Interval : {interval}  |  Chart dir: {chart_dir}")
     print(f"{'='*55}")
 
     for symbol in symbols:
@@ -222,14 +260,14 @@ async def scan_options(
         print(f"\n  Scanning {symbol}...")
 
         # 1. Fetch option chain
-        print(f"  Fetching option chain...")
+        print("  Fetching option chain...")
         option_chain = await oc_fetcher.fetch_option_chain(symbol)
 
         if option_chain:
             print(format_option_chain_summary(option_chain))
         else:
             print(f"  WARNING: Could not fetch option chain for {symbol}")
-            print(f"  (NSE may block requests. Strategies needing OI data will be skipped.)")
+            print("  (NSE may block requests. OI-based strategies will be skipped.)")
             option_chain = {}
 
         # 2. Fetch intraday price data
@@ -240,9 +278,12 @@ async def scan_options(
             print(f"  ERROR: Insufficient price data for {symbol}")
             continue
 
-        print(f"  Got {len(df)} candles, latest close: Rs.{float(df['close'].iloc[-1]):,.2f}")
+        print(
+            f"  Got {len(df)} candles, "
+            f"latest close: ₹{float(df['close'].iloc[-1]):,.2f}"
+        )
 
-        # 3. Run strategies
+        # 3. Build company_info with option chain
         company_info = {
             "name": symbol,
             "symbol": symbol,
@@ -251,16 +292,60 @@ async def scan_options(
             "option_chain": option_chain,
         }
 
+        # 4. Run strategies
         for strategy in strategies:
             try:
                 signal = strategy.scan(symbol, df, company_info)
-                if signal:
-                    all_signals.append(signal)
-                    output = format_options_signal(signal)
-                    print(output)
+                if not signal:
+                    continue
 
-                    if telegram:
-                        await telegram.send_alert(output, signal.priority.value)
+                all_signals.append(signal)
+
+                # ── Console output ─────────────────────────────────────
+                output = format_options_signal(signal)
+                print(output)
+
+                # ── Generate chart image ───────────────────────────────
+                chart_path = str(
+                    Path(chart_dir)
+                    / f"options_{symbol}_{signal.strategy_name.replace(' ', '_')}.png"
+                )
+                chart_saved = visualizer.save_signal_chart(df, signal, chart_path)
+
+                # ── Format Telegram message ────────────────────────────
+                signal_dict = signal.__dict__.copy() if hasattr(signal, "__dict__") else {}
+                # Prefer to_dict() if available
+                if hasattr(signal, "to_dict"):
+                    signal_dict = signal.to_dict()
+                # Ensure indicator_details top-level for formatter
+                if "indicator_details" not in signal_dict:
+                    signal_dict["indicator_details"] = signal.indicator_details
+                signal_dict["individual_signals"] = []  # no aggregation for options
+
+                tg_message = alert_formatter.format_options_signal(signal_dict)
+
+                # ── Send via Telegram ──────────────────────────────────
+                if telegram and not dry_run:
+                    await telegram.send_alert(
+                        tg_message,
+                        signal.priority.value,
+                        image_path=chart_path if chart_saved else None,
+                    )
+                elif dry_run:
+                    logger.info(
+                        f"[DRY-RUN] Options signal: {signal.symbol} "
+                        f"{signal.metadata.get('option_type', '')} "
+                        f"{signal.metadata.get('atm_strike', '')} "
+                        f"conf={signal.confidence:.0%}"
+                    )
+
+                # Cleanup chart after delivery
+                if chart_saved and telegram and not dry_run:
+                    try:
+                        os.remove(chart_path)
+                    except OSError:
+                        pass
+
             except Exception as e:
                 logger.debug(f"{symbol}/{strategy.name}: {e}")
 
@@ -282,17 +367,23 @@ async def main():
 
     if args.repeat > 0:
         print(f"\nAUTO-REPEAT: Scanning every {args.repeat} minutes")
-        print(f"Press Ctrl+C to stop\n")
+        print("Press Ctrl+C to stop\n")
 
         scan_count = 0
         while True:
             scan_count += 1
             print(f"\n{'#'*55}")
-            print(f"  OPTIONS SCAN #{scan_count} - {datetime.now().strftime('%H:%M:%S IST')}")
+            print(
+                f"  OPTIONS SCAN #{scan_count} — "
+                f"{datetime.now().strftime('%H:%M:%S IST')}"
+            )
             print(f"{'#'*55}")
 
             signals = await scan_options(
-                symbols, args.interval, strategies, args.telegram
+                symbols, args.interval, strategies,
+                send_telegram=args.telegram,
+                dry_run=args.dry_run,
+                chart_dir=args.chart_dir,
             )
 
             if signals:
@@ -307,7 +398,10 @@ async def main():
                 break
     else:
         signals = await scan_options(
-            symbols, args.interval, strategies, args.telegram
+            symbols, args.interval, strategies,
+            send_telegram=args.telegram,
+            dry_run=args.dry_run,
+            chart_dir=args.chart_dir,
         )
 
         print(f"\n{'='*55}")
