@@ -66,6 +66,27 @@ except Exception:
     TelegramBot = None
 
 IST = pytz.timezone("Asia/Kolkata")
+logger = get_logger(__name__)
+
+
+def _compute_atr14(df: "pd.DataFrame") -> float:
+    """Compute ATR-14 (Wilder) from an OHLCV DataFrame."""
+    try:
+        if len(df) < 15 or not {"high", "low", "close"}.issubset(df.columns):
+            return 0.0
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        prev_close = df["close"].astype(float).shift(1)
+        tr = (
+            (high - low)
+            .combine(abs(high - prev_close), max)
+            .combine(abs(low - prev_close), max)
+        )
+        atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+        return float(atr.iloc[-1])
+    except Exception:
+        return 0.0
+
 
 # ============================================================================
 # OPTIONS TRADING CONFIGURATION
@@ -765,6 +786,16 @@ async def scan_options(
                     continue
 
                 all_signals.append(signal)
+
+                # Enrich metadata with ATR14 if strategy didn't provide it
+                if not signal.metadata.get("atr_pct"):
+                    atr14 = _compute_atr14(df)
+                    if atr14 > 0:
+                        signal.metadata["atr"] = round(atr14, 4)
+                        signal.metadata["atr_pct"] = (
+                            round(atr14 / signal.entry_price * 100, 2)
+                            if signal.entry_price > 0 else 0.0
+                        )
 
                 # ── Console output ─────────────────────────────────────
                 output = format_options_signal(signal)

@@ -92,6 +92,31 @@ from src.utils.time_helpers import (
 logger = get_logger(__name__)
 
 
+def _compute_atr14(df: "pd.DataFrame") -> float:
+    """
+    Compute ATR-14 (Wilder) from an OHLCV DataFrame.
+
+    Returns the ATR as an absolute price value, or 0.0 if the
+    DataFrame has fewer than 15 rows or is missing required columns.
+    """
+    try:
+        if len(df) < 15 or not {"high", "low", "close"}.issubset(df.columns):
+            return 0.0
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        prev_close = df["close"].astype(float).shift(1)
+        tr = (
+            (high - low)
+            .combine(abs(high - prev_close), max)
+            .combine(abs(low - prev_close), max)
+        )
+        # Wilder smoothing: SMA for first value, then EWM
+        atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+        return float(atr.iloc[-1])
+    except Exception:
+        return 0.0
+
+
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -381,6 +406,13 @@ async def run_daily_scan(
                     if signals:
                         chunk_signals += len(signals)
                         scan_stats["signals_found"] += len(signals)
+
+                        # Compute ATR14 once per symbol while df is in scope.
+                        # BTST strategies (Flag, Darvas, …) don't add ATR to
+                        # their metadata, so get_trading_time_info() would
+                        # default to atr_pct=0.0 and show "ATR 0.0%".
+                        atr14 = _compute_atr14(df)
+
                         for sig in signals:
                             logger.info(
                                 f"SIGNAL: {sig.strategy_name} -> "
@@ -390,6 +422,13 @@ async def run_daily_scan(
                                 f"target={sig.target_price:.2f} "
                                 f"SL={sig.stop_loss:.2f}"
                             )
+                            # Enrich metadata with ATR if strategy didn't provide it
+                            if atr14 > 0 and not sig.metadata.get("atr_pct"):
+                                sig.metadata["atr"] = round(atr14, 4)
+                                sig.metadata["atr_pct"] = round(
+                                    atr14 / sig.entry_price * 100, 2
+                                ) if sig.entry_price > 0 else 0.0
+
                             # Generate chart while df is still in scope
                             if symbol not in chart_paths:
                                 temp_path = f"/tmp/chart_{symbol}.png"
