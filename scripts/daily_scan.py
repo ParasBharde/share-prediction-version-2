@@ -269,7 +269,33 @@ async def run_daily_scan(
                 "Paper trading engine not available"
             )
 
-        # 5. Get stock list - THIS IS THE CRITICAL PART FOR 2700+ STOCKS
+        # 5. Market context check (Nifty trend + India VIX regime)
+        #    Prevents BUY signals on confirmed bearish market days.
+        from src.utils.market_context import get_market_context
+        market_ctx = await get_market_context(fallback_manager)
+        results["market_regime"] = market_ctx["regime"]
+
+        logger.info(
+            f"Market regime: {market_ctx['regime']} | "
+            f"{market_ctx['reason']}"
+        )
+
+        if not market_ctx["allow_buys"] and telegram:
+            regime_msg = (
+                f"⚠️ MARKET REGIME: *{market_ctx['regime']}*\n"
+                f"{market_ctx['reason']}\n\n"
+                f"Nifty: {market_ctx['nifty_close']} "
+                f"({market_ctx['nifty_vs_ema']:+.1f}% vs 20D EMA)\n"
+                f"India VIX: {market_ctx['vix']} "
+                f"({market_ctx['vix_regime']})\n\n"
+                f"_No BUY signals will be sent today._"
+            )
+            try:
+                await telegram.send_alert(regime_msg, priority="HIGH")
+            except Exception:
+                pass
+
+        # 6. Get stock list - THIS IS THE CRITICAL PART FOR 2700+ STOCKS
         stock_list = await _get_stock_universe(
             fallback_manager, config
         )
@@ -280,7 +306,7 @@ async def run_daily_scan(
 
         logger.info(f"📊 Scanning {len(stock_list)} stocks")
 
-        # 6. Fetch data and run strategies on all stocks
+        # 7. Fetch data and run strategies on all stocks
         all_signals: List[TradingSignal] = []
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365)
@@ -443,6 +469,23 @@ async def run_daily_scan(
                     f"Signal type filter '{signal_type_filter}': "
                     f"{before_count} -> {len(filtered)} signals"
                 )
+
+            # Apply market context filter
+            # In BEARISH regime, suppress BUY/STRONG_BUY signals.
+            # (Options BUY_PE are stored as SELL signal_type — those pass through)
+            if not market_ctx.get("allow_buys", True):
+                before_count = len(filtered)
+                filtered = [
+                    s for s in filtered
+                    if s.signal_type.value
+                    not in ("BUY", "STRONG_BUY")
+                ]
+                suppressed = before_count - len(filtered)
+                if suppressed:
+                    logger.warning(
+                        f"Market regime {market_ctx['regime']}: "
+                        f"suppressed {suppressed} BUY signals"
+                    )
 
             results["signals_generated"] = len(filtered)
 
