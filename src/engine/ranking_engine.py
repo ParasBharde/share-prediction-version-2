@@ -20,9 +20,7 @@ Fallbacks:
     Signals with invalid data are ranked last, not dropped.
 """
 
-import math
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from src.engine.signal_aggregator import AggregatedSignal
@@ -33,16 +31,20 @@ from src.utils.config_loader import load_config, get_nested
 logger = get_logger(__name__)
 
 # Default ranking weights
-DEFAULT_CONFIDENCE_WEIGHT = 0.40
-DEFAULT_RECENCY_WEIGHT = 0.20
-DEFAULT_RISK_REWARD_WEIGHT = 0.25
+DEFAULT_CONFIDENCE_WEIGHT    = 0.45   # raised from 0.40 (most predictive)
+DEFAULT_RISK_REWARD_WEIGHT   = 0.30   # raised from 0.25
 DEFAULT_STRATEGY_COUNT_WEIGHT = 0.15
+DEFAULT_GAP_RISK_WEIGHT      = 0.10   # replaces recency (irrelevant for same-day scans)
 
-# Recency window
-DEFAULT_RECENCY_WINDOW_DAYS = 7
+# Gap-risk: a stock that gapped up strongly today has less room to run
+# (high gap = less upside potential in BTST holding period)
+# Score = 1 - min(gap_pct / MAX_ACCEPTABLE_GAP, 1.0)
+DEFAULT_MAX_ACCEPTABLE_GAP_PCT = 5.0   # >5% open gap = highest gap risk
 
 # Sector diversification
 DEFAULT_MAX_PER_SECTOR = 2
+# Sector placeholder: when sector metadata is unavailable, skip the cap
+_UNKNOWN_SECTOR = "Unknown"
 
 
 def rank_signals(
@@ -97,8 +99,9 @@ def rank_signals(
             )
             scored_signals.append((signal, 0.0))
 
-    # Stage 2: Apply recency penalty
-    scored_signals = _apply_recency_penalty(scored_signals, ranking_config)
+    # Stage 2: Apply gap-risk adjustment (replaces useless recency penalty)
+    # For BTST: a stock that gapped up heavily has less upside in the holding period.
+    scored_signals = _apply_gap_risk_adjustment(scored_signals, ranking_config)
 
     # Stage 3: Sort by composite score descending
     scored_signals.sort(key=lambda pair: pair[1], reverse=True)
@@ -162,11 +165,11 @@ def _calculate_composite_score(
     confidence_score = signal.weighted_confidence
 
     # Risk-reward component (normalized to 0-1 via sigmoid-like)
-    risk = signal.entry_price - signal.stop_loss
-    reward = signal.target_price - signal.entry_price
+    risk = abs(signal.entry_price - signal.stop_loss)
+    reward = abs(signal.target_price - signal.entry_price)
     if risk > 0 and reward > 0:
         rr_ratio = reward / risk
-        # Normalize: RR of 2.0 maps to ~0.73, RR of 3.0 to ~0.82
+        # Normalize: RR of 2.0 maps to ~0.67, RR of 3.0 to ~0.75
         rr_score = 1.0 - (1.0 / (1.0 + rr_ratio))
     else:
         rr_score = 0.0
@@ -174,6 +177,7 @@ def _calculate_composite_score(
     # Strategy agreement component (normalized: 1->0.33, 2->0.67, 3->1.0)
     strategy_score = min(1.0, signal.strategy_count / 3.0)
 
+    # Note: gap-risk component is applied in the separate adjustment step
     composite = (
         w_confidence * confidence_score
         + w_risk_reward * rr_score
@@ -190,67 +194,66 @@ def _calculate_composite_score(
     return composite
 
 
-def _apply_recency_penalty(
+def _apply_gap_risk_adjustment(
     scored_signals: List[tuple],
     config: Optional[Dict[str, Any]] = None,
 ) -> List[tuple]:
     """
-    Apply a time-decay penalty to signal scores.
+    Adjust scores based on intraday gap risk.
 
-    Signals older than the recency window receive a linearly
-    decaying multiplier. Signals within the window receive
-    no penalty. The window defaults to 7 days.
+    A stock that opened with a large gap-up has already captured
+    much of its potential move, leaving less upside for a BTST
+    holding overnight. Gap risk is computed as:
+
+        gap_pct = (open - prev_close) / prev_close * 100
+
+    If gap_pct metadata is available in the signal, a gap-risk
+    score of (1 - gap_pct / max_gap) is blended in.
+
+    When gap metadata is unavailable (most cases currently), this
+    function is a no-op — it simply returns the scores unchanged.
 
     Args:
         scored_signals: List of (AggregatedSignal, score) tuples.
-        config: Optional ranking config with recency window setting.
+        config: Optional ranking config.
 
     Returns:
         Updated list of (AggregatedSignal, adjusted_score) tuples.
     """
     cfg = config or {}
-    window_days = get_nested(
-        cfg, "recency_window_days", DEFAULT_RECENCY_WINDOW_DAYS
+    gap_risk_weight = get_nested(
+        cfg, "weight_gap_risk", DEFAULT_GAP_RISK_WEIGHT
     )
-    recency_weight = get_nested(
-        cfg, "weight_recency", DEFAULT_RECENCY_WEIGHT
+    max_gap = get_nested(
+        cfg, "max_acceptable_gap_pct", DEFAULT_MAX_ACCEPTABLE_GAP_PCT
     )
-
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=window_days)
 
     adjusted = []
     for signal, score in scored_signals:
-        signal_time = signal.generated_at
-        # Ensure timezone-aware comparison
-        if signal_time.tzinfo is None:
-            signal_time = signal_time.replace(tzinfo=timezone.utc)
+        # Try to extract gap data from individual signal metadata
+        gap_pct: Optional[float] = None
+        for ind_sig in signal.individual_signals:
+            meta = ind_sig.get("metadata", {})
+            if "gap_pct" in meta:
+                gap_pct = float(meta["gap_pct"])
+                break
 
-        if signal_time >= cutoff:
-            # Within window: scale from 1.0 (just now) to 0.5 (at cutoff)
-            age_fraction = (now - signal_time).total_seconds() / (
-                window_days * 86400
+        if gap_pct is not None and gap_pct > 0:
+            # Higher gap = higher risk = lower gap_risk_score
+            gap_risk_score = max(0.0, 1.0 - gap_pct / max_gap)
+            adjusted_score = (
+                score * (1.0 - gap_risk_weight)
+                + gap_risk_score * gap_risk_weight
             )
-            recency_factor = 1.0 - (0.5 * age_fraction)
+            if gap_pct > 1.0:
+                logger.debug(
+                    f"{signal.symbol}: Gap-risk adjustment "
+                    f"(gap={gap_pct:.1f}%, "
+                    f"score {score:.4f} -> {adjusted_score:.4f})"
+                )
         else:
-            # Beyond window: heavy penalty
-            days_old = (now - signal_time).days
-            recency_factor = max(0.1, 0.5 * math.exp(
-                -0.1 * (days_old - window_days)
-            ))
-
-        # Blend recency into the score
-        adjusted_score = (
-            score * (1.0 - recency_weight)
-            + score * recency_factor * recency_weight
-        )
-
-        if recency_factor < 0.9:
-            logger.debug(
-                f"{signal.symbol}: Recency penalty applied "
-                f"(factor={recency_factor:.3f}, "
-                f"score {score:.4f} -> {adjusted_score:.4f})"
-            )
+            # No gap data available — leave score unchanged
+            adjusted_score = score
 
         adjusted.append((signal, adjusted_score))
 
@@ -284,7 +287,14 @@ def _apply_sector_diversification(
         # Extract sector from individual signals metadata
         sector = _extract_sector(signal)
 
-        if sector and sector_counts[sector] >= max_per_sector:
+        # Skip diversification cap for "Unknown" sector — applying a cap
+        # when sector data is unavailable would incorrectly group all stocks
+        # together and block legitimate signals from different real sectors.
+        if (
+            sector
+            and sector != _UNKNOWN_SECTOR
+            and sector_counts[sector] >= max_per_sector
+        ):
             logger.debug(
                 f"{signal.symbol}: Dropped for sector diversification "
                 f"(sector={sector}, count={sector_counts[sector]})"
@@ -292,7 +302,7 @@ def _apply_sector_diversification(
             dropped += 1
             continue
 
-        if sector:
+        if sector and sector != _UNKNOWN_SECTOR:
             sector_counts[sector] += 1
         result.append(signal)
 
