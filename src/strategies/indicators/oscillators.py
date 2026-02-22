@@ -173,6 +173,46 @@ def cci(
     return (typical_price - sma_tp) / (0.015 * mean_dev)
 
 
+def wilder_atr(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """
+    ATR using Wilder's recursive smoothing (the correct method).
+
+    Wilder's formula: ATR[i] = (ATR[i-1] * (n-1) + TR[i]) / n
+    This differs from EWM (span=period) which underestimates ATR.
+    Using EWM produces tighter stop-losses than the strategy intends.
+
+    Args:
+        high: High price series.
+        low: Low price series.
+        close: Close price series.
+        period: ATR lookback period (default 14).
+
+    Returns:
+        ATR series using Wilder's smoothing.
+    """
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # Wilder's smoothing: seed with simple mean of first `period` TRs,
+    # then apply recursive: ATR[i] = (ATR[i-1] * (n-1) + TR[i]) / n
+    atr_values = np.full(len(tr), np.nan)
+    if len(tr) < period:
+        return pd.Series(atr_values, index=close.index)
+
+    atr_values[period - 1] = tr.iloc[:period].mean()
+    for i in range(period, len(tr)):
+        atr_values[i] = (atr_values[i - 1] * (period - 1) + tr.iloc[i]) / period
+
+    return pd.Series(atr_values, index=close.index)
+
+
 def supertrend(
     high: pd.Series,
     low: pd.Series,
@@ -181,54 +221,69 @@ def supertrend(
     multiplier: float = 3.0,
 ) -> pd.DataFrame:
     """
-    Supertrend indicator.
+    Supertrend indicator using Wilder's ATR and array-based computation.
+
+    Fixes:
+    - Uses wilder_atr() instead of EWM (correct band width)
+    - Avoids pandas .iloc assignment (ChainedAssignmentError in pandas 2.x)
+      by computing band adjustment and supertrend via numpy arrays
 
     Args:
         high: High price series.
         low: Low price series.
         close: Close price series.
-        period: ATR lookback period.
-        multiplier: ATR multiplier for bands.
+        period: ATR period for band calculation.
+        multiplier: ATR multiplier for band width.
 
     Returns:
-        DataFrame with supertrend, direction (+1 bullish, -1 bearish).
+        DataFrame with supertrend, direction (+1 bullish, -1 bearish),
+        upper_band, and lower_band.
     """
-    tr1 = high - low
-    tr2 = abs(high - close.shift(1))
-    tr3 = abs(low - close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.ewm(span=period, adjust=False).mean()
+    atr = wilder_atr(high, low, close, period)
 
-    hl2 = (high + low) / 2
-    upper_band = hl2 + (multiplier * atr)
-    lower_band = hl2 - (multiplier * atr)
+    hl2 = (high + low) / 2.0
+    # Raw bands (before Supertrend adjustment)
+    raw_upper = (hl2 + multiplier * atr).to_numpy(dtype=float)
+    raw_lower = (hl2 - multiplier * atr).to_numpy(dtype=float)
+    close_arr = close.to_numpy(dtype=float)
 
-    supertrend_val = pd.Series(np.nan, index=close.index)
-    direction = pd.Series(1, index=close.index)
+    n = len(close_arr)
+    upper_band  = raw_upper.copy()
+    lower_band  = raw_lower.copy()
+    direction   = np.ones(n, dtype=int)
+    st_val      = np.full(n, np.nan)
 
-    for i in range(1, len(close)):
-        if close.iloc[i] > upper_band.iloc[i - 1]:
-            direction.iloc[i] = 1
-        elif close.iloc[i] < lower_band.iloc[i - 1]:
-            direction.iloc[i] = -1
+    for i in range(1, n):
+        # Adjust lower band: only trail upward (prevent band from dropping)
+        if raw_lower[i] > lower_band[i - 1] or close_arr[i - 1] < lower_band[i - 1]:
+            lower_band[i] = raw_lower[i]
         else:
-            direction.iloc[i] = direction.iloc[i - 1]
-            if direction.iloc[i] == 1 and lower_band.iloc[i] < lower_band.iloc[i - 1]:
-                lower_band.iloc[i] = lower_band.iloc[i - 1]
-            if direction.iloc[i] == -1 and upper_band.iloc[i] > upper_band.iloc[i - 1]:
-                upper_band.iloc[i] = upper_band.iloc[i - 1]
+            lower_band[i] = lower_band[i - 1]
 
-        supertrend_val.iloc[i] = (
-            lower_band.iloc[i] if direction.iloc[i] == 1
-            else upper_band.iloc[i]
-        )
+        # Adjust upper band: only trail downward (prevent band from rising)
+        if raw_upper[i] < upper_band[i - 1] or close_arr[i - 1] > upper_band[i - 1]:
+            upper_band[i] = raw_upper[i]
+        else:
+            upper_band[i] = upper_band[i - 1]
 
+        # Direction flip logic
+        if direction[i - 1] == -1 and close_arr[i] > upper_band[i - 1]:
+            direction[i] = 1
+        elif direction[i - 1] == 1 and close_arr[i] < lower_band[i - 1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i - 1]
+
+        # Supertrend value = lower band when bullish, upper band when bearish
+        st_val[i] = lower_band[i] if direction[i] == 1 else upper_band[i]
+
+    idx = close.index
     return pd.DataFrame(
         {
-            "supertrend": supertrend_val,
-            "direction": direction,
-            "upper_band": upper_band,
-            "lower_band": lower_band,
+            "supertrend": pd.Series(st_val, index=idx),
+            "direction":  pd.Series(direction, index=idx),
+            "upper_band": pd.Series(upper_band, index=idx),
+            "lower_band": pd.Series(lower_band, index=idx),
         }
     )
 

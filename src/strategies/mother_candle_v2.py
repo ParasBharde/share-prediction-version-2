@@ -39,6 +39,10 @@ class MotherCandleV2Strategy(BaseStrategy):
         self.min_babies = params.get("min_baby_candles", 2)
         self.mother_range_multiplier = params.get("mother_range_multiplier", 1.5)
         self.baby_tolerance_pct = params.get("baby_tolerance_pct", 0.1)
+        # Maximum age of mother candle in bars — if mother candle is older than
+        # this, its price levels are stale and should not be traded.
+        # Default: 10 bars (2 trading weeks). Beyond this, the pattern decays.
+        self.max_pattern_age_bars = params.get("max_pattern_age_bars", 10)
 
         # Volume params
         self.mother_vol_multiplier = params.get("mother_vol_multiplier", 1.3)
@@ -161,6 +165,21 @@ class MotherCandleV2Strategy(BaseStrategy):
         mother_idx = pattern["mother_position"]
         baby_count = pattern["baby_count"]
         breakout_close = pattern["breakout_close"]
+
+        # ════════════════════════════════════════════════════════════
+        # PATTERN AGE CHECK: reject stale mother candle levels
+        # mother_idx is a negative offset (e.g. -7 means 7 bars ago)
+        # Total pattern age = abs(mother_idx) - 1 (exclude breakout bar)
+        # ════════════════════════════════════════════════════════════
+        pattern_age_bars = abs(mother_idx) - 1  # bars since mother candle
+        if pattern_age_bars > self.max_pattern_age_bars:
+            self._scan_stats["no_pattern"] += 1
+            logger.debug(
+                f"{symbol}: Pattern too old — mother candle was "
+                f"{pattern_age_bars} bars ago "
+                f"(max: {self.max_pattern_age_bars})"
+            )
+            return None
 
         # ════════════════════════════════════════════════════════════
         # NEW FILTER 2: MINIMUM BREAKOUT STRENGTH
