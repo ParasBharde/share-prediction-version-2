@@ -431,10 +431,19 @@ async def run_daily_scan(
                                     tempfile.gettempdir(),
                                     f"chart_{symbol}.png",
                                 )
-                                if visualizer.save_signal_chart(
+                                chart_ok = visualizer.save_signal_chart(
                                     df, sig, temp_path
-                                ):
+                                )
+                                if chart_ok:
                                     chart_paths[symbol] = temp_path
+                                    logger.info(
+                                        f"Chart queued for {symbol}: {temp_path}"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Chart generation FAILED for {symbol} "
+                                        f"— alert will be text-only"
+                                    )
                     all_signals.extend(signals)
                     results["stocks_scanned"] += 1
 
@@ -586,6 +595,11 @@ async def run_daily_scan(
 
                     # Attach chart image when available
                     chart_path = chart_paths.get(signal.symbol)
+                    logger.info(
+                        f"Sending alert for {signal.symbol}: "
+                        f"chart_path={chart_path!r} "
+                        f"file_exists={bool(chart_path and os.path.isfile(chart_path))}"
+                    )
 
                     # Send via Telegram (or log if not configured)
                     if telegram:
