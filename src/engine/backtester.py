@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 
 # Cost defaults
 DEFAULT_COMMISSION_PCT = 0.03  # 0.03% per trade
-DEFAULT_SLIPPAGE_PCT = 0.10  # 0.10% per trade
+DEFAULT_SLIPPAGE_PCT = 0.10   # 0.10% per trade
 DEFAULT_INITIAL_CAPITAL = 1_000_000.0  # 10 lakh INR
 
 # Risk-free rate for Sharpe calculation (annualized)
@@ -272,7 +272,7 @@ def run_backtest(
     position: Optional[Trade] = None
     equity_curve: List[float] = []
 
-    # We need a lookback window for strategy indicators
+    # Lookback window needed for strategy indicators
     min_lookback = 200
 
     for i in range(min_lookback, len(df_bt)):
@@ -320,6 +320,7 @@ def run_backtest(
             elif current_high >= target_level:
                 exit_price = target_level
                 exit_reason = "target_hit"
+
             else:
                 # Check if strategy generates a SELL signal
                 try:
