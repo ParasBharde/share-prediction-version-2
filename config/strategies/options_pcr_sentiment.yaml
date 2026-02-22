@@ -45,6 +45,8 @@ signal_generation:
   # Configurable PCR thresholds
   bullish_pcr_threshold: 1.2      # PCR > this = bullish sentiment → BUY CE
   bearish_pcr_threshold: 0.8      # PCR < this = bearish sentiment → BUY PE
+  # IV filter: skip signal if ATM Implied Volatility exceeds this %
+  max_iv_to_buy: 40.0             # skip if ATM IV > 40%
 
 risk_management:
   stop_loss:

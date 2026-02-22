@@ -70,9 +70,9 @@ class Trade:
     return_pct: float = 0.0
     strategy_name: str = ""
     exit_reason: str = ""
-    # Signal-level SL/target (used for accurate exit simulation)
-    stop_loss: Optional[float] = None
-    target_price: Optional[float] = None
+    # Signal-based exit levels (set at entry time from the strategy signal)
+    signal_stop_loss: float = 0.0
+    signal_target_price: float = 0.0
 
     @property
     def is_winner(self) -> bool:
@@ -103,6 +103,8 @@ class Trade:
             "return_pct": round(self.return_pct, 4),
             "strategy_name": self.strategy_name,
             "exit_reason": self.exit_reason,
+            "signal_stop_loss": self.signal_stop_loss,
+            "signal_target_price": self.signal_target_price,
         }
 
 
@@ -296,26 +298,27 @@ def run_backtest(
             exit_price = None
             exit_reason = ""
 
-            # Check stop-loss against the signal's actual SL level.
-            # Use intraday low so we catch intrabar breaches correctly.
+            # Use signal stop-loss if available, else fall back to 5% below entry
             sl_level = (
-                position.stop_loss
-                if position.stop_loss is not None
-                else position.entry_price * 0.95  # fallback: 5%
+                position.signal_stop_loss
+                if position.signal_stop_loss > 0
+                else position.entry_price * 0.95
             )
-            tgt_level = (
-                position.target_price
-                if position.target_price is not None
-                else position.entry_price * 1.10  # fallback: 10%
+            # Use signal target if available, else fall back to 10% above entry
+            target_level = (
+                position.signal_target_price
+                if position.signal_target_price > 0
+                else position.entry_price * 1.10
             )
 
+            # Check stop-loss (use low of the day)
             if current_low <= sl_level:
                 exit_price = sl_level
                 exit_reason = "stop_loss"
 
-            # Check target using intraday high
-            elif current_high >= tgt_level:
-                exit_price = tgt_level
+            # Check target (use high of the day)
+            elif current_high >= target_level:
+                exit_price = target_level
                 exit_reason = "target_hit"
             else:
                 # Check if strategy generates a SELL signal
@@ -450,8 +453,8 @@ def run_backtest(
                     commission=total_commission,
                     slippage_cost=slippage_cost,
                     strategy_name=strategy.name,
-                    stop_loss=signal_sl,
-                    target_price=signal_tgt,
+                    signal_stop_loss=signal.stop_loss if signal.stop_loss > 0 else 0.0,
+                    signal_target_price=signal.target_price if signal.target_price > 0 else 0.0,
                 )
 
                 cash -= total_cost

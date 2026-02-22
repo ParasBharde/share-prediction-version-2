@@ -32,6 +32,7 @@ templates:
     🟢 Target:     `{{ currency }}{{ target_price }}` ({{ target_pct }}%)
 
     ⚖️ R:R = `1:{{ rr_ratio }}` | Risk `{{ currency }}{{ risk_amount }}` → Reward `{{ currency }}{{ reward_amount }}`
+    {% if suggested_qty > 0 %}💼 Position: `{{ suggested_qty }} shares` × `{{ currency }}{{ entry_price }}` = `{{ currency }}{{ suggested_investment }}` _({{ risk_per_trade_pct }}% risk on {{ currency }}{{ default_capital_lakh }}L)_{% endif %}
     {% if has_trading_time %}
     🕐 *TIMING*
     📅 Entry: {{ entry_date }} | `{{ entry_window }}`

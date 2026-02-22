@@ -232,16 +232,18 @@ def _merge_signals_for_symbol(
         signals_to_merge, weights
     )
 
-    # Average the price levels from agreeing strategies
-    entry_price = sum(s.entry_price for s in signals_to_merge) / len(
-        signals_to_merge
+    # Use the highest-confidence signal's price levels.
+    # Averaging entry/target/SL across strategies produces levels that
+    # no individual strategy validated — leading to incorrect R:R and
+    # SL levels that don't sit at meaningful chart levels.
+    # The highest-confidence signal is the "primary" signal; others serve
+    # as confirmation.
+    primary_signal = max(
+        signals_to_merge, key=lambda s: s.confidence
     )
-    target_price = sum(s.target_price for s in signals_to_merge) / len(
-        signals_to_merge
-    )
-    stop_loss = sum(s.stop_loss for s in signals_to_merge) / len(
-        signals_to_merge
-    )
+    entry_price = primary_signal.entry_price
+    target_price = primary_signal.target_price
+    stop_loss = primary_signal.stop_loss
 
     # Highest priority among contributing signals
     priority_order = {

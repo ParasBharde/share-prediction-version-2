@@ -223,4 +223,7 @@ DEFAULT_BACKOFF_FACTOR = 2
 DEFAULT_BACKOFF_MAX = 16
 
 # Alert deduplication window (seconds)
-ALERT_DEDUP_WINDOW = 86400  # 24 hours
+# 3 trading days — prevents the same symbol/direction from re-alerting
+# across consecutive daily scans (Mon→Wed).  BUY and SELL on the same
+# symbol are still treated as separate slots.
+ALERT_DEDUP_WINDOW = 259200  # 72 hours (3 trading days)
