@@ -249,7 +249,7 @@ async def run_btst_scan(
             logger.info("[BTST] Dry-run mode — Telegram delivery disabled")
 
         # ── Stock universe ─────────────────────────────────────────────────
-        from scripts.daily_scan import _get_stock_universe
+        from scripts.daily_scan import _compute_atr14, _get_stock_universe
         stock_list = await _get_stock_universe(fallback_manager, config)
 
         if not stock_list:
@@ -324,6 +324,8 @@ async def run_btst_scan(
                     if signals:
                         chunk_signals += len(signals)
                         scan_stats["signals_found"] += len(signals)
+                        # Compute ATR14 once per symbol while df is in scope
+                        atr14 = _compute_atr14(df)
                         for sig in signals:
                             icon = _SIGNAL_ICONS.get(
                                 sig.strategy_name, "📈"
@@ -336,6 +338,13 @@ async def run_btst_scan(
                                 f"SL={sig.stop_loss:.2f} "
                                 f"conf={sig.confidence:.0%}"
                             )
+                            # Enrich metadata with ATR if strategy didn't provide it
+                            if atr14 > 0 and not sig.metadata.get("atr_pct"):
+                                sig.metadata["atr"] = round(atr14, 4)
+                                sig.metadata["atr_pct"] = (
+                                    round(atr14 / sig.entry_price * 100, 2)
+                                    if sig.entry_price > 0 else 0.0
+                                )
 
                         # Generate chart for first signal per symbol
                         if symbol not in chart_paths:
