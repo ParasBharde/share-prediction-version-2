@@ -450,18 +450,16 @@ async def run_daily_scan(
             paper_trade_signals = []
             for signal in filtered:
                 try:
-                    # Check deduplication
-                    signal_strategy = (
-                        signal.contributing_strategies[0]
-                        if signal.contributing_strategies
-                        else "unknown"
-                    )
+                    # Check deduplication — key is symbol + direction so
+                    # the same BUY signal doesn't fire 3 days in a row,
+                    # but a SELL can still go through after a prior BUY.
+                    signal_direction = signal.signal_type.value
                     if deduplicator.is_duplicate(
-                        signal.symbol, signal_strategy
+                        signal.symbol, signal_direction
                     ):
                         logger.debug(
                             f"Skipping duplicate alert: "
-                            f"{signal.symbol}"
+                            f"{signal.symbol} ({signal_direction})"
                         )
                         continue
 
@@ -524,7 +522,7 @@ async def run_daily_scan(
 
                     if sent:
                         deduplicator.mark_sent(
-                            signal.symbol, signal_strategy
+                            signal.symbol, signal_direction
                         )
                         results["alerts_sent"] += 1
 
