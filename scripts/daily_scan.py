@@ -56,6 +56,19 @@ from src.alerts.alert_deduplicator import AlertDeduplicator
 from src.alerts.alert_formatter import AlertFormatter
 from src.utils.visualizer import ChartVisualizer
 
+# Warn immediately (stdout) if chart dependencies are missing so the user
+# doesn't have to dig through log files to understand why images are absent.
+try:
+    import plotly.graph_objects as _go  # noqa: F401
+    import kaleido  # noqa: F401
+    del _go
+except ImportError as _e:
+    print(
+        f"\n[WARNING] Chart images DISABLED — missing dependency: {_e}\n"
+        "  Fix: pip install plotly \"kaleido>=0.2.1,<1.0.0\"\n",
+        flush=True,
+    )
+
 try:
     from src.alerts.telegram_bot import TelegramBot
 except Exception:
