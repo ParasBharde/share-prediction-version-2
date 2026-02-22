@@ -329,13 +329,25 @@ class ChartVisualizer:
         try:
             n = len(df_plot)
             dark_bg = "#1a1a2e"
-            fig, ax = plt.subplots(figsize=(14, 7), facecolor=dark_bg)
+            has_volume = "volume" in df_plot.columns and df_plot["volume"].sum() > 0
+
+            # ── Figure layout: candlestick (70%) + optional volume (30%) ──
+            import matplotlib.gridspec as gridspec
+            fig = plt.figure(figsize=(14, 8 if has_volume else 7), facecolor=dark_bg)
+            if has_volume:
+                gs = gridspec.GridSpec(2, 1, height_ratios=[7, 3], hspace=0.04)
+                ax = fig.add_subplot(gs[0])
+                ax_vol = fig.add_subplot(gs[1], sharex=ax)
+            else:
+                ax = fig.add_subplot(111)
+                ax_vol = None
             ax.set_facecolor(dark_bg)
 
             # ── Candlesticks ─────────────────────────────────────────
+            bull_color, bear_color = "#26a69a", "#ef5350"
             for i, (_, row) in enumerate(df_plot.iterrows()):
                 bullish = float(row["close"]) >= float(row["open"])
-                color = "#26a69a" if bullish else "#ef5350"
+                color = bull_color if bullish else bear_color
                 lo, hi = float(row["low"]), float(row["high"])
                 op, cl = float(row["open"]), float(row["close"])
                 ax.plot([i, i], [lo, hi], color=color, linewidth=0.8, zorder=2)
@@ -374,7 +386,56 @@ class ChartVisualizer:
                 arrowprops=dict(arrowstyle="->", color=arrow_color, lw=1.5),
             )
 
-            # ── Axes styling ─────────────────────────────────────────
+            # ── Volume panel ──────────────────────────────────────────
+            if ax_vol is not None:
+                ax_vol.set_facecolor(dark_bg)
+                vols = df_plot["volume"].tolist()
+                closes = df_plot["close"].tolist()
+                opens = df_plot["open"].tolist()
+                v_colors = [
+                    bull_color if closes[i] >= opens[i] else bear_color
+                    for i in range(n)
+                ]
+                ax_vol.bar(
+                    range(n), vols, width=0.7,
+                    color=v_colors, alpha=0.75, zorder=2,
+                )
+                # "Vol" label top-left of the panel
+                ax_vol.text(
+                    0.01, 0.88, "Vol", transform=ax_vol.transAxes,
+                    fontsize=8, color="#9598a1", va="top",
+                )
+                ax_vol.set_facecolor(dark_bg)
+                ax_vol.set_xlim(-1, n + 2)
+                for spine in ax_vol.spines.values():
+                    spine.set_edgecolor((1.0, 1.0, 1.0, 0.12))
+                ax_vol.tick_params(colors="#9598a1", labelsize=7)
+                ax_vol.tick_params(axis="y", labelcolor="#9598a1")
+                ax_vol.yaxis.set_label_position("right")
+                ax_vol.yaxis.tick_right()
+                ax_vol.yaxis.set_major_formatter(
+                    plt.FuncFormatter(lambda v, _: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v/1e3:.0f}K")
+                )
+                ax_vol.grid(color=(1.0, 1.0, 1.0, 0.06), linewidth=0.5)
+                # x-axis labels live on the volume panel; hide them on price panel
+                plt.setp(ax.get_xticklabels(), visible=False)
+                step = max(1, n // 8)
+                ticks = list(range(0, n, step))
+                ax_vol.set_xticks(ticks)
+                ax_vol.set_xticklabels(
+                    [df_plot.index[i].strftime("%d %b") for i in ticks],
+                    fontsize=8, color="#9598a1",
+                )
+            else:
+                step = max(1, n // 8)
+                ticks = list(range(0, n, step))
+                ax.set_xticks(ticks)
+                ax.set_xticklabels(
+                    [df_plot.index[i].strftime("%d %b") for i in ticks],
+                    fontsize=8, color="#9598a1",
+                )
+
+            # ── Price-panel axes styling ──────────────────────────────
             ax.set_xlim(-1, n + 2)
             for spine in ax.spines.values():
                 spine.set_edgecolor((1.0, 1.0, 1.0, 0.12))
@@ -383,13 +444,6 @@ class ChartVisualizer:
             ax.yaxis.set_label_position("right")
             ax.yaxis.tick_right()
             ax.set_ylabel("Price (₹)", color="#9598a1", fontsize=9)
-            step = max(1, n // 8)
-            ticks = list(range(0, n, step))
-            ax.set_xticks(ticks)
-            ax.set_xticklabels(
-                [df_plot.index[i].strftime("%d %b") for i in ticks],
-                fontsize=8, color="#9598a1",
-            )
             ax.grid(color=(1.0, 1.0, 1.0, 0.06), linewidth=0.5)
 
             # ── Title ─────────────────────────────────────────────────
@@ -405,7 +459,6 @@ class ChartVisualizer:
                 fontsize=10, color="#d1d4dc", loc="left", pad=8,
             )
 
-            plt.tight_layout(pad=1.0)
             plt.savefig(
                 output_path, dpi=150, bbox_inches="tight",
                 facecolor=dark_bg, edgecolor="none",
