@@ -17,6 +17,11 @@ scanning:
   # BOTH: required for bearish options (BUY_PE) to reach Telegram
   signal_type_filter: "BOTH"  # Options: BUY, SELL, BOTH
 
+  # Minimum weighted confidence for a signal to be alerted.
+  # Range: 0.0–1.0.  Raise to 0.75–0.80 for fewer, higher-quality alerts.
+  # Lower to 0.60 if signals are too rare.
+  min_signal_confidence: 0.70
+
   # Scanning schedule (IST)
   # ── BTST Timing Rationale ─────────────────────────────────────────────────
   # Scan begins at 15:15 IST so 2700+ stocks (NIFTY 500 + Midcap + Smallcap)

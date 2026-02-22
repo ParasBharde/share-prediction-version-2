@@ -43,6 +43,7 @@ import argparse
 import asyncio
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -431,7 +432,10 @@ async def run_daily_scan(
 
                             # Generate chart while df is still in scope
                             if symbol not in chart_paths:
-                                temp_path = f"/tmp/chart_{symbol}.png"
+                                temp_path = os.path.join(
+                                    tempfile.gettempdir(),
+                                    f"chart_{symbol}.png",
+                                )
                                 if visualizer.save_signal_chart(
                                     df, sig, temp_path
                                 ):
@@ -507,6 +511,20 @@ async def run_daily_scan(
 
             ranked = rank_signals(aggregated)
             filtered = filter_signals(ranked)
+
+            # Apply minimum confidence threshold — only alert on high-quality setups
+            min_conf = config.get("scanning", {}).get(
+                "min_signal_confidence", 0.65
+            )
+            before_conf = len(filtered)
+            filtered = [
+                s for s in filtered if s.weighted_confidence >= min_conf
+            ]
+            if len(filtered) < before_conf:
+                logger.info(
+                    f"Confidence filter ({min_conf:.0%}): "
+                    f"{before_conf} → {len(filtered)} signals"
+                )
 
             # Apply signal type filter from config
             signal_type_filter = config.get("scanning", {}).get(
