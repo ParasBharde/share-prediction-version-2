@@ -45,6 +45,9 @@ signal_generation:
   # Multi-candle OI breakout confirmation
   confirm_bars_below: 2          # price must be below resistance for N bars before break
   min_candle_strength: 0.55      # breakout candle close must be in top 55% of its range
+  # IV filter: skip signal if ATM Implied Volatility exceeds this %
+  # High IV = expensive options, poor risk-reward for buyers
+  max_iv_to_buy: 40.0            # skip if ATM IV > 40%
 
 risk_management:
   stop_loss:
