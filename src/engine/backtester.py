@@ -434,6 +434,12 @@ def run_backtest(
                     abs(entry_price - current_close) * quantity
                 )
 
+                # Use signal's actual SL and target for accurate exit simulation
+                signal_sl = getattr(signal, "stop_loss", None)
+                signal_tgt = getattr(signal, "target", None) or getattr(
+                    signal, "target_price", None
+                )
+
                 position = Trade(
                     symbol=symbol,
                     entry_date=(

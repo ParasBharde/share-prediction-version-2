@@ -261,12 +261,20 @@ class DataValidator:
         """
         Clean and sanitize OHLCV records.
 
+        Steps:
+        1. Validate and drop records with hard errors
+        2. Sort by date
+        3. Remove duplicates (keep last occurrence)
+        4. Forward-fill missing trading-day gaps so indicator
+           lookbacks (ATR, EMA, Supertrend) don't break on
+           stocks that were suspended or had holiday gaps.
+
         Args:
             records: Raw OHLCV records.
             symbol: Stock symbol.
 
         Returns:
-            Cleaned records list.
+            Cleaned, gap-filled records list.
         """
         valid_records, _ = self.validate_records(records, symbol)
 
@@ -274,16 +282,97 @@ class DataValidator:
         valid_records.sort(key=lambda x: x["date"])
 
         # Remove duplicates (keep last)
-        seen_dates = {}
+        seen_dates: Dict[str, Dict] = {}
         for record in valid_records:
             date_key = str(record["date"])
             seen_dates[date_key] = record
 
         cleaned = list(seen_dates.values())
 
+        # ── Forward-fill gaps (missing trading days) ──────────────────────────
+        # We only fill gaps ≤ 7 calendar days so we don't manufacture data
+        # across multi-week suspensions (e.g. delisted / circuit stocks).
+        filled = self._forward_fill_gaps(cleaned, symbol)
+
         logger.debug(
-            f"Cleaned {symbol}: {len(records)} -> "
-            f"{len(cleaned)} records"
+            f"Cleaned {symbol}: {len(records)} raw → "
+            f"{len(cleaned)} valid → {len(filled)} after gap-fill"
         )
 
-        return cleaned
+        return filled
+
+    def _forward_fill_gaps(
+        self,
+        records: List[Dict],
+        symbol: str,
+        max_gap_days: int = 7,
+    ) -> List[Dict]:
+        """
+        Forward-fill missing trading-day gaps in the record list.
+
+        For each consecutive pair of records, if the gap between them
+        is between 2 and `max_gap_days` calendar days, insert synthetic
+        records that carry the previous close as OHLC and zero volume.
+        This prevents indicator calculations from producing NaN or wrong
+        values due to missing bars.
+
+        Args:
+            records: Sorted, deduplicated OHLCV record list.
+            symbol: Stock symbol (for logging).
+            max_gap_days: Only fill gaps smaller than this many calendar days.
+
+        Returns:
+            Record list with gaps filled.
+        """
+        from datetime import timedelta
+
+        if len(records) < 2:
+            return records
+
+        filled: List[Dict] = [records[0]]
+        gaps_filled = 0
+
+        for i in range(1, len(records)):
+            prev = filled[-1]
+            curr = records[i]
+
+            prev_date = prev["date"]
+            curr_date = curr["date"]
+
+            # Normalize to date objects for arithmetic
+            if isinstance(prev_date, datetime):
+                prev_date = prev_date.date()
+            if isinstance(curr_date, datetime):
+                curr_date = curr_date.date()
+
+            gap_days = (curr_date - prev_date).days
+
+            # Fill 2–max_gap_days gaps with forward-filled bars
+            if 2 <= gap_days <= max_gap_days:
+                for d_offset in range(1, gap_days):
+                    synthetic_date = prev_date + timedelta(days=d_offset)
+                    # Skip weekends
+                    if synthetic_date.weekday() >= 5:
+                        continue
+                    prev_close = prev["close"]
+                    filled.append({
+                        "date": datetime.combine(
+                            synthetic_date, datetime.min.time()
+                        ),
+                        "open":   prev_close,
+                        "high":   prev_close,
+                        "low":    prev_close,
+                        "close":  prev_close,
+                        "volume": 0,
+                        "source": "forward_fill",
+                    })
+                    gaps_filled += 1
+
+            filled.append(curr)
+
+        if gaps_filled > 0:
+            logger.debug(
+                f"Forward-filled {gaps_filled} missing bars for {symbol}"
+            )
+
+        return filled
