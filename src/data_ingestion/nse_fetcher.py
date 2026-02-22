@@ -21,6 +21,7 @@ Fallbacks:
 
 import asyncio
 import csv
+import random
 from io import StringIO
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -42,6 +43,7 @@ from src.utils.constants import (
     NSE_HEADERS,
     NSE_HOMEPAGE_HEADERS,
     NSE_INDEX_ARCHIVE_PATH,
+    NSE_USER_AGENTS,
 )
 
 logger = get_logger(__name__)
@@ -55,6 +57,8 @@ class NSEFetcher(BaseFetcher):
         super().__init__("nse_official")
         self._cookies: Optional[Dict] = None
         self._cookie_expiry: Optional[datetime] = None
+        # Rotate user-agent per session to reduce WAF fingerprinting
+        self._user_agent: str = random.choice(NSE_USER_AGENTS)
 
         source_config = self.config.get("primary", {})
         self.retry_config = source_config.get("retry", {})
@@ -75,55 +79,95 @@ class NSEFetcher(BaseFetcher):
 
     async def _refresh_session(self) -> bool:
         """
-        Refresh NSE session cookies by visiting main page.
-        Uses browser-like homepage headers for the initial visit.
+        Refresh NSE session cookies by visiting a multi-page warmup sequence.
+
+        Strategy:
+        - Rotate user-agent on each refresh cycle
+        - Visit homepage → market-data page → option-chain page
+          (mimics a real trader browsing NSE)
+        - Add human-like jitter delays between page visits
+        - Handle 429 rate-limit with Retry-After respect
+        - Full session recreation on repeated 403s
 
         Returns:
-            True if session was refreshed successfully.
+            True if session was refreshed and cookies obtained.
         """
+        # Rotate user-agent to reduce WAF fingerprinting
+        self._user_agent = random.choice(NSE_USER_AGENTS)
+
+        warmup_sequence = [
+            (NSE_BASE_URL, None),
+            (f"{NSE_BASE_URL}/market-data/live-equity-market", NSE_BASE_URL),
+            (f"{NSE_BASE_URL}/option-chain", f"{NSE_BASE_URL}/market-data/live-equity-market"),
+        ]
+
         try:
             session = await self._get_session()
 
-            # Visit homepage with browser-like headers to get cookies
-            async with session.get(
-                NSE_BASE_URL,
-                headers=NSE_HOMEPAGE_HEADERS,
-                allow_redirects=True,
-            ) as response:
-                if response.status != 200:
-                    logger.warning(
-                        f"NSE session refresh got HTTP "
-                        f"{response.status}"
-                    )
-                    if response.status in (401, 403):
-                        await self._reset_session()
-                    return False
+            for url, referer in warmup_sequence:
+                page_headers = {**NSE_HOMEPAGE_HEADERS, "User-Agent": self._user_agent}
+                if referer:
+                    page_headers["Referer"] = referer
+                else:
+                    page_headers.pop("Referer", None)
+                    page_headers["Sec-Fetch-Site"] = "none"
 
-            warm_headers = {**NSE_HOMEPAGE_HEADERS}
-            warm_headers["Referer"] = NSE_BASE_URL
-            async with session.get(
-                f"{NSE_BASE_URL}/option-chain",
-                headers=warm_headers,
-                allow_redirects=True,
-            ) as response:
-                if response.status != 200:
-                    logger.warning(
-                        f"NSE option-chain warmup got HTTP "
-                        f"{response.status}"
-                    )
-                    if response.status in (401, 403):
-                        await self._reset_session()
-                    return False
+                try:
+                    async with session.get(
+                        url,
+                        headers=page_headers,
+                        allow_redirects=True,
+                    ) as response:
+                        await response.read()
+                        status = response.status
+                        logger.debug(
+                            f"NSE warmup {url} → HTTP {status}"
+                        )
 
-            self._cookies = {}
-            for cookie in session.cookie_jar:
-                self._cookies[cookie.key] = cookie.value
+                        if status == 429:
+                            retry_after = int(
+                                response.headers.get("Retry-After", "10")
+                            )
+                            logger.warning(
+                                f"NSE rate-limited (429) during warmup, "
+                                f"sleeping {retry_after}s"
+                            )
+                            await asyncio.sleep(retry_after + random.uniform(1, 3))
+
+                        elif status in (401, 403):
+                            logger.warning(
+                                f"NSE auth failure ({status}) on warmup {url}"
+                            )
+                            await self._reset_session()
+                            return False
+
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    raise
+                except Exception as exc:
+                    logger.debug(f"NSE warmup request failed for {url}: {exc}")
+
+                # Human-like delay between page visits
+                await asyncio.sleep(random.uniform(0.7, 1.8))
+
+            # Collect cookies
+            self._cookies = {
+                cookie.key: cookie.value
+                for cookie in session.cookie_jar
+            }
             self._cookie_expiry = datetime.now()
-            logger.info(
-                f"NSE session cookies refreshed: "
-                f"{list(self._cookies.keys())}"
-            )
-            return True
+
+            if self._cookies:
+                logger.info(
+                    f"NSE session cookies refreshed "
+                    f"(keys: {list(self._cookies.keys())})"
+                )
+                return True
+            else:
+                logger.warning(
+                    "NSE warmup completed but no cookies were set"
+                )
+                return False
+
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as e:
@@ -256,7 +300,6 @@ class NSEFetcher(BaseFetcher):
             params=params,
             auth_failure_handler=self._refresh_session,
         )
-        print(f"Quote data for {symbol}: {data}")
         if data and "priceInfo" in data:
             price_info = data["priceInfo"]
             return {
@@ -399,7 +442,7 @@ class NSEFetcher(BaseFetcher):
         }
 
         session = await self._get_session()
-        print(f"Fetching index archive for {index} from {url} with session") 
+        logger.debug(f"Fetching index archive for {index} from {url}")
         try:
             async with session.get(
                 url, headers=headers

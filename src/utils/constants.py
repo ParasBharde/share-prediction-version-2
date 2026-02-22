@@ -47,13 +47,46 @@ NSE_HISTORICAL = "/historical/cm/equity"
 NSE_INDEX_DATA = "/equity-stockIndices"
 NSE_MARKET_STATUS = "/marketStatus"
 
-# Default headers for NSE (must match real browser to avoid WAF blocks)
-NSE_HEADERS = {
-    "User-Agent": (
+# ── NSE User-Agent rotation pool ─────────────────────────────────────────────
+# Rotate through multiple realistic browser UA strings to avoid WAF fingerprinting.
+NSE_USER_AGENTS = [
+    # Chrome 124 on Windows
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    # Chrome 123 on macOS
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    ),
+    # Firefox 125 on Windows
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) "
+        "Gecko/20100101 Firefox/125.0"
+    ),
+    # Edge 124 on Windows
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
+    ),
+    # Chrome 131 on Windows (legacy constant – kept for compatibility)
+    (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/131.0.0.0 Safari/537.36"
     ),
+]
+
+# Default UA (first in pool) – kept for backward compatibility
+_DEFAULT_UA = NSE_USER_AGENTS[0]
+
+# Default headers for NSE (must match real browser to avoid WAF blocks)
+NSE_HEADERS = {
+    "User-Agent": _DEFAULT_UA,
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
     "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -62,8 +95,8 @@ NSE_HEADERS = {
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
     "Sec-Ch-Ua": (
-        '"Google Chrome";v="131", "Chromium";v="131", '
-        '"Not_A Brand";v="24"'
+        '"Google Chrome";v="124", "Chromium";v="124", '
+        '"Not_A Brand";v="99"'
     ),
     "Sec-Ch-Ua-Mobile": "?0",
     "Sec-Ch-Ua-Platform": '"Windows"',
@@ -71,7 +104,7 @@ NSE_HEADERS = {
 
 # Headers for NSE homepage visit (to get cookies)
 NSE_HOMEPAGE_HEADERS = {
-    "User-Agent": NSE_HEADERS["User-Agent"],
+    "User-Agent": _DEFAULT_UA,
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"

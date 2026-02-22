@@ -70,6 +70,9 @@ class Trade:
     return_pct: float = 0.0
     strategy_name: str = ""
     exit_reason: str = ""
+    # Signal-level SL/target (used for accurate exit simulation)
+    stop_loss: Optional[float] = None
+    target_price: Optional[float] = None
 
     @property
     def is_winner(self) -> bool:
@@ -293,16 +296,26 @@ def run_backtest(
             exit_price = None
             exit_reason = ""
 
-            # Check stop-loss (use low of the day)
-            if current_low <= position.entry_price * 0.95:
-                # Simplified stop-loss at 5% below entry
-                exit_price = position.entry_price * 0.95
+            # Check stop-loss against the signal's actual SL level.
+            # Use intraday low so we catch intrabar breaches correctly.
+            sl_level = (
+                position.stop_loss
+                if position.stop_loss is not None
+                else position.entry_price * 0.95  # fallback: 5%
+            )
+            tgt_level = (
+                position.target_price
+                if position.target_price is not None
+                else position.entry_price * 1.10  # fallback: 10%
+            )
+
+            if current_low <= sl_level:
+                exit_price = sl_level
                 exit_reason = "stop_loss"
 
-            # Check target (use high of the day)
-            elif current_high >= position.entry_price * 1.10:
-                # Simplified target at 10% above entry
-                exit_price = position.entry_price * 1.10
+            # Check target using intraday high
+            elif current_high >= tgt_level:
+                exit_price = tgt_level
                 exit_reason = "target_hit"
             else:
                 # Check if strategy generates a SELL signal
@@ -418,6 +431,12 @@ def run_backtest(
                     abs(entry_price - current_close) * quantity
                 )
 
+                # Use signal's actual SL and target for accurate exit simulation
+                signal_sl = getattr(signal, "stop_loss", None)
+                signal_tgt = getattr(signal, "target", None) or getattr(
+                    signal, "target_price", None
+                )
+
                 position = Trade(
                     symbol=symbol,
                     entry_date=(
@@ -431,6 +450,8 @@ def run_backtest(
                     commission=total_commission,
                     slippage_cost=slippage_cost,
                     strategy_name=strategy.name,
+                    stop_loss=signal_sl,
+                    target_price=signal_tgt,
                 )
 
                 cash -= total_cost
