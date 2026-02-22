@@ -56,16 +56,24 @@ from src.alerts.alert_deduplicator import AlertDeduplicator
 from src.alerts.alert_formatter import AlertFormatter
 from src.utils.visualizer import ChartVisualizer
 
-# Warn immediately (stdout) if chart dependencies are missing so the user
-# doesn't have to dig through log files to understand why images are absent.
+# Warn immediately (stdout) if chart dependencies are missing or mis-versioned
+# so the user doesn't have to dig through log files to understand why images are absent.
 try:
-    import plotly.graph_objects as _go  # noqa: F401
+    import plotly as _plotly
     import kaleido  # noqa: F401
-    del _go
+    _pver = tuple(int(x) for x in _plotly.__version__.split(".")[:2])
+    if _pver >= (6, 0):
+        print(
+            f"\n[WARNING] Chart images DISABLED — plotly {_plotly.__version__} is not compatible "
+            "with kaleido 0.2.x.\n"
+            "  Fix: pip install \"plotly>=5.17.0,<6.0.0\"\n",
+            flush=True,
+        )
+    del _plotly, _pver
 except ImportError as _e:
     print(
         f"\n[WARNING] Chart images DISABLED — missing dependency: {_e}\n"
-        "  Fix: pip install plotly \"kaleido>=0.2.1,<1.0.0\"\n",
+        "  Fix: pip install \"plotly>=5.17.0,<6.0.0\" \"kaleido>=0.2.1,<1.0.0\"\n",
         flush=True,
     )
 
