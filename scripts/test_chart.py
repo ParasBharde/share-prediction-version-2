@@ -86,10 +86,9 @@ signal = TradingSignal(
 from src.utils.visualizer import ChartVisualizer
 
 out_path = os.path.join(tempfile.gettempdir(), "test_chart_smoke.png")
+visualizer = ChartVisualizer()
 print(f"\nOutput path : {out_path}")
 print(f"Calling save_signal_chart() (timeout = {visualizer._KALEIDO_TIMEOUT}s) ...")
-
-visualizer = ChartVisualizer()
 try:
     ok = visualizer.save_signal_chart(df, signal, out_path)
     if ok and os.path.isfile(out_path):
