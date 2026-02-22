@@ -452,6 +452,20 @@ async def run_daily_scan(
         # 7. Aggregate and rank signals
         if all_signals:
             aggregated = aggregate_signals(all_signals)
+
+            # Enrich aggregated signals with sector data so that the
+            # ranking engine's sector diversification cap works correctly.
+            # We only fetch sector for the few signal symbols (not all
+            # 2700+ stocks), so this is cheap (~10-50 yfinance calls).
+            if aggregated:
+                signal_symbols = [s.symbol for s in aggregated]
+                sector_map = await _fetch_sector_map(signal_symbols)
+                for agg_sig in aggregated:
+                    sect = sector_map.get(agg_sig.symbol, "Unknown")
+                    if sect and sect != "Unknown":
+                        for ind_sig in agg_sig.individual_signals:
+                            ind_sig.setdefault("metadata", {})["sector"] = sect
+
             ranked = rank_signals(aggregated)
             filtered = filter_signals(ranked)
 
@@ -493,18 +507,16 @@ async def run_daily_scan(
             paper_trade_signals = []
             for signal in filtered:
                 try:
-                    # Check deduplication
-                    signal_strategy = (
-                        signal.contributing_strategies[0]
-                        if signal.contributing_strategies
-                        else "unknown"
-                    )
+                    # Check deduplication — key is symbol + direction so
+                    # the same BUY signal doesn't fire 3 days in a row,
+                    # but a SELL can still go through after a prior BUY.
+                    signal_direction = signal.signal_type.value
                     if deduplicator.is_duplicate(
-                        signal.symbol, signal_strategy
+                        signal.symbol, signal_direction
                     ):
                         logger.debug(
                             f"Skipping duplicate alert: "
-                            f"{signal.symbol}"
+                            f"{signal.symbol} ({signal_direction})"
                         )
                         continue
 
@@ -567,7 +579,7 @@ async def run_daily_scan(
 
                     if sent:
                         deduplicator.mark_sent(
-                            signal.symbol, signal_strategy
+                            signal.symbol, signal_direction
                         )
                         results["alerts_sent"] += 1
 
@@ -932,6 +944,36 @@ async def _get_stock_universe(
 
     logger.error(f"❌ Failed to get stock list for {universe}")
     return []
+
+
+async def _fetch_sector_map(symbols: List[str]) -> Dict[str, str]:
+    """
+    Fetch Yahoo Finance sector for each symbol (NSE suffix appended).
+
+    Called only for stocks that produced signals, typically ≤50 symbols,
+    so the individual yfinance calls are fast.  Failures fall back to
+    "Unknown" silently — sector enrichment is best-effort.
+
+    Args:
+        symbols: List of NSE ticker symbols (e.g. ["RELIANCE", "TCS"]).
+
+    Returns:
+        Dict mapping symbol → sector string.
+    """
+    import yfinance as yf
+
+    sector_map: Dict[str, str] = {}
+    for sym in symbols:
+        try:
+            info = yf.Ticker(f"{sym}.NS").info
+            sector = info.get("sector") or "Unknown"
+            sector_map[sym] = sector
+            if sector != "Unknown":
+                logger.debug(f"Sector for {sym}: {sector}")
+        except Exception as exc:
+            logger.debug(f"Sector fetch failed for {sym}: {exc}")
+            sector_map[sym] = "Unknown"
+    return sector_map
 
 
 async def test_single_symbol(symbol: str) -> None:

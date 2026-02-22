@@ -45,6 +45,11 @@ _FALLBACK_TEMPLATES: Dict[str, str] = {
         "Target: {{ currency }}{{ target_price }} "
         "({{ target_pct }}%)\n"
         "R:R = 1:{{ rr_ratio }}\n"
+        "{% if suggested_qty > 0 %}"
+        "Position: {{ suggested_qty }} shares @ "
+        "{{ currency }}{{ entry_price }} "
+        "= {{ currency }}{{ suggested_investment }}\n"
+        "{% endif %}"
         "Confidence: {{ confidence }}% "
         "({{ indicators_met }}/{{ total_indicators }})\n"
         "{{ indicators_summary }}"
@@ -177,6 +182,25 @@ class AlertFormatter:
         trading_time = signal.get("trading_time", {})
         has_trading_time = bool(trading_time)
 
+        # Position sizing guidance
+        # qty = (capital × risk_pct%) / risk_per_share
+        sizing_config = load_config("system").get(
+            "position_sizing", {}
+        )
+        default_capital = sizing_config.get("default_capital", 1_000_000)
+        risk_pct = sizing_config.get("risk_per_trade_pct", 1.0)
+        risk_budget = default_capital * risk_pct / 100.0  # e.g. ₹10,000
+        if risk_amt > 0 and entry > 0:
+            suggested_qty = max(1, int(risk_budget / risk_amt))
+            suggested_investment = self._format_price(
+                suggested_qty * entry
+            )
+        else:
+            suggested_qty = 0
+            suggested_investment = "N/A"
+        # Show capital in lakh (e.g. "10L") for readability
+        capital_lakh = int(default_capital / 100_000)
+
         context = {
             "symbol": signal.get("symbol", "UNKNOWN"),
             "company_name": company_name,
@@ -200,6 +224,11 @@ class AlertFormatter:
             "strategy_count": signal.get("strategy_count", 1),
             "currency": CURRENCY_SYMBOL,
             "timestamp": now_ist().strftime("%I:%M %p IST | %d %b %Y"),
+            # Position sizing
+            "suggested_qty": suggested_qty,
+            "suggested_investment": suggested_investment,
+            "default_capital_lakh": capital_lakh,
+            "risk_per_trade_pct": risk_pct,
             # Trading time fields
             "has_trading_time": has_trading_time,
             "timeframe": trading_time.get("timeframe", "1D"),
