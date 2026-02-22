@@ -217,7 +217,9 @@ class ChartVisualizer:
                 os.makedirs(parent, exist_ok=True)
 
             if not self._write_image_with_timeout(fig, output_path):
-                return False
+                # kaleido failed — try pure-matplotlib fallback
+                if not self._write_matplotlib_fallback(df_plot, signal, output_path):
+                    return False
 
             logger.info(
                 "Chart saved",
@@ -295,6 +297,133 @@ class ChartVisualizer:
                     "kaleido raised an exception: %s", exc, exc_info=True
                 )
                 return False
+
+    def _write_matplotlib_fallback(
+        self,
+        df_plot: pd.DataFrame,
+        signal: "TradingSignal",
+        output_path: str,
+    ) -> bool:
+        """
+        Render a basic OHLCV candlestick chart using matplotlib when kaleido
+        is unavailable (antivirus blocking binary extraction, etc.).
+
+        The chart is visually simpler than the plotly version but contains
+        all essential price levels and the entry annotation.  It is labelled
+        "[fallback renderer]" in the title so the difference is obvious.
+
+        Returns True on success, False on any failure.
+        """
+        try:
+            import matplotlib  # type: ignore
+            matplotlib.use("Agg")  # non-interactive, file-only backend
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+        except ImportError:
+            logger.error(
+                "matplotlib is not installed; cannot use fallback chart renderer. "
+                "Install with: pip install matplotlib"
+            )
+            return False
+
+        try:
+            n = len(df_plot)
+            dark_bg = "#1a1a2e"
+            fig, ax = plt.subplots(figsize=(14, 7), facecolor=dark_bg)
+            ax.set_facecolor(dark_bg)
+
+            # ── Candlesticks ─────────────────────────────────────────
+            for i, (_, row) in enumerate(df_plot.iterrows()):
+                bullish = float(row["close"]) >= float(row["open"])
+                color = "#26a69a" if bullish else "#ef5350"
+                lo, hi = float(row["low"]), float(row["high"])
+                op, cl = float(row["open"]), float(row["close"])
+                ax.plot([i, i], [lo, hi], color=color, linewidth=0.8, zorder=2)
+                body_y = min(op, cl)
+                body_h = max(abs(cl - op), hi * 1e-4)
+                ax.add_patch(
+                    mpatches.Rectangle(
+                        (i - 0.35, body_y), 0.7, body_h,
+                        facecolor=color, edgecolor=color, linewidth=0.4, zorder=3,
+                    )
+                )
+
+            # ── Target / SL lines ────────────────────────────────────
+            ax.axhline(signal.target_price, color="#00e676", linewidth=1.2, linestyle="--", zorder=4)
+            ax.annotate(
+                f"T ₹{signal.target_price:,.2f}",
+                xy=(n - 1, signal.target_price), xytext=(4, 2),
+                textcoords="offset points", fontsize=8, color="#00e676",
+            )
+            ax.axhline(signal.stop_loss, color="#ef5350", linewidth=1.2, linestyle="--", zorder=4)
+            ax.annotate(
+                f"SL ₹{signal.stop_loss:,.2f}",
+                xy=(n - 1, signal.stop_loss), xytext=(4, 2),
+                textcoords="offset points", fontsize=8, color="#ef5350",
+            )
+
+            # ── Entry arrow on last bar ───────────────────────────────
+            opt_type = signal.metadata.get("option_type", "")
+            is_put = "PE" in opt_type or signal.signal_type.value == "SELL"
+            arrow_color = "#ef5350" if is_put else "#00e676"
+            ax.annotate(
+                f"{'▼' if is_put else '▲'} ₹{signal.entry_price:,.2f}",
+                xy=(n - 1, signal.entry_price),
+                xytext=(0, -40 if is_put else 40), textcoords="offset points",
+                fontsize=9, color=arrow_color, ha="center",
+                arrowprops=dict(arrowstyle="->", color=arrow_color, lw=1.5),
+            )
+
+            # ── Axes styling ─────────────────────────────────────────
+            ax.set_xlim(-1, n + 2)
+            for spine in ax.spines.values():
+                spine.set_edgecolor((1.0, 1.0, 1.0, 0.12))
+            ax.tick_params(colors="#9598a1", labelsize=8)
+            ax.tick_params(axis="y", labelcolor="#9598a1")
+            ax.yaxis.set_label_position("right")
+            ax.yaxis.tick_right()
+            ax.set_ylabel("Price (₹)", color="#9598a1", fontsize=9)
+            step = max(1, n // 8)
+            ticks = list(range(0, n, step))
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(
+                [df_plot.index[i].strftime("%d %b") for i in ticks],
+                fontsize=8, color="#9598a1",
+            )
+            ax.grid(color=(1.0, 1.0, 1.0, 0.06), linewidth=0.5)
+
+            # ── Title ─────────────────────────────────────────────────
+            rr = signal.metadata.get("rr_ratio", signal.risk_reward_ratio)
+            conf = signal.confidence * 100
+            ax.set_title(
+                f"{signal.symbol}  ·  {signal.strategy_name}"
+                f"   |   Entry ₹{signal.entry_price:,.2f}"
+                f"   Target ₹{signal.target_price:,.2f}"
+                f"   SL ₹{signal.stop_loss:,.2f}"
+                f"   R:R 1:{rr:.1f}   Conf {conf:.0f}%"
+                f"   [fallback renderer]",
+                fontsize=10, color="#d1d4dc", loc="left", pad=8,
+            )
+
+            plt.tight_layout(pad=1.0)
+            plt.savefig(
+                output_path, dpi=150, bbox_inches="tight",
+                facecolor=dark_bg, edgecolor="none",
+            )
+            plt.close(fig)
+
+            logger.warning(
+                "kaleido unavailable — saved matplotlib fallback chart for %s: %s",
+                signal.symbol, output_path,
+            )
+            return True
+
+        except Exception as exc:
+            logger.error(
+                "matplotlib fallback chart failed for %s: %s",
+                signal.symbol, exc, exc_info=True,
+            )
+            return False
 
     # ------------------------------------------------------------------
     # Strategy-specific overlay methods
