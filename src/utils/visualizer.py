@@ -38,6 +38,7 @@ Logging:
 """
 
 import os
+import concurrent.futures
 from typing import Any, List, Optional, Tuple
 
 import pandas as pd
@@ -215,7 +216,9 @@ class ChartVisualizer:
             if parent:
                 os.makedirs(parent, exist_ok=True)
 
-            fig.write_image(output_path, format="png", scale=2)
+            if not self._write_image_with_timeout(fig, output_path):
+                return False
+
             logger.info(
                 "Chart saved",
                 extra={"symbol": signal.symbol, "path": output_path},
@@ -237,6 +240,61 @@ class ChartVisualizer:
     ) -> bool:
         """Alias for save_signal_chart (backward compatibility)."""
         return self.save_signal_chart(df, signal, output_path)
+
+    # ------------------------------------------------------------------
+    # Internal PNG export helper
+    # ------------------------------------------------------------------
+
+    _KALEIDO_TIMEOUT = 45  # seconds; kaleido 0.2.x can hang on Windows
+
+    def _write_image_with_timeout(
+        self,
+        fig: "go.Figure",
+        output_path: str,
+    ) -> bool:
+        """
+        Call fig.write_image() in a background thread with a hard timeout.
+
+        kaleido 0.2.x on Windows occasionally deadlocks because its bundled
+        Chromium subprocess never responds (antivirus, first-run extraction,
+        or pipe-buffer issues).  Running the call in a separate thread lets
+        us abort after ``_KALEIDO_TIMEOUT`` seconds and return False instead
+        of freezing the entire scan.
+
+        If the timeout fires the background thread is left to die on its own
+        (daemon=True by default in ThreadPoolExecutor), and the main process
+        continues normally.
+
+        Typical fix when this triggers repeatedly:
+            1. Temporarily disable real-time antivirus and retry once —
+               kaleido extracts its binary on first run.
+            2. Run ``python -c "import kaleido"`` in a clean terminal to
+               force extraction before the scan.
+            3. Upgrade: ``pip install \"kaleido>=0.2.1\"``
+        """
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                fig.write_image, output_path, format="png", scale=2
+            )
+            try:
+                future.result(timeout=self._KALEIDO_TIMEOUT)
+                return True
+            except concurrent.futures.TimeoutError:
+                logger.error(
+                    "kaleido timed out after %ds while exporting chart to %s. "
+                    "This is a known kaleido 0.2.x issue on Windows. "
+                    "Workaround: disable antivirus briefly and run "
+                    "'python -c \"import kaleido\"' once to let it extract "
+                    "its binary, then re-enable antivirus.",
+                    self._KALEIDO_TIMEOUT,
+                    output_path,
+                )
+                return False
+            except Exception as exc:
+                logger.error(
+                    "kaleido raised an exception: %s", exc, exc_info=True
+                )
+                return False
 
     # ------------------------------------------------------------------
     # Strategy-specific overlay methods
