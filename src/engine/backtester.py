@@ -70,6 +70,9 @@ class Trade:
     return_pct: float = 0.0
     strategy_name: str = ""
     exit_reason: str = ""
+    # Signal-based exit levels (set at entry time from the strategy signal)
+    signal_stop_loss: float = 0.0
+    signal_target_price: float = 0.0
 
     @property
     def is_winner(self) -> bool:
@@ -100,6 +103,8 @@ class Trade:
             "return_pct": round(self.return_pct, 4),
             "strategy_name": self.strategy_name,
             "exit_reason": self.exit_reason,
+            "signal_stop_loss": self.signal_stop_loss,
+            "signal_target_price": self.signal_target_price,
         }
 
 
@@ -293,16 +298,27 @@ def run_backtest(
             exit_price = None
             exit_reason = ""
 
+            # Use signal stop-loss if available, else fall back to 5% below entry
+            sl_level = (
+                position.signal_stop_loss
+                if position.signal_stop_loss > 0
+                else position.entry_price * 0.95
+            )
+            # Use signal target if available, else fall back to 10% above entry
+            target_level = (
+                position.signal_target_price
+                if position.signal_target_price > 0
+                else position.entry_price * 1.10
+            )
+
             # Check stop-loss (use low of the day)
-            if current_low <= position.entry_price * 0.95:
-                # Simplified stop-loss at 5% below entry
-                exit_price = position.entry_price * 0.95
+            if current_low <= sl_level:
+                exit_price = sl_level
                 exit_reason = "stop_loss"
 
             # Check target (use high of the day)
-            elif current_high >= position.entry_price * 1.10:
-                # Simplified target at 10% above entry
-                exit_price = position.entry_price * 1.10
+            elif current_high >= target_level:
+                exit_price = target_level
                 exit_reason = "target_hit"
             else:
                 # Check if strategy generates a SELL signal
@@ -431,6 +447,8 @@ def run_backtest(
                     commission=total_commission,
                     slippage_cost=slippage_cost,
                     strategy_name=strategy.name,
+                    signal_stop_loss=signal.stop_loss if signal.stop_loss > 0 else 0.0,
+                    signal_target_price=signal.target_price if signal.target_price > 0 else 0.0,
                 )
 
                 cash -= total_cost
