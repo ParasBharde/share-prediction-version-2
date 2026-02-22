@@ -78,6 +78,8 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
         self.st_period = params.get("supertrend_period", 10)
         self.st_multiplier = params.get("supertrend_multiplier", 3.0)
         self.bypass_time = params.get("bypass_time_filter", False)
+        # IV filter: skip if ATM IV is above this % (options too expensive)
+        self.max_iv_to_buy = params.get("max_iv_to_buy", 40.0)
 
         self._scan_stats = {
             "total": 0,
@@ -86,6 +88,8 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
             "vwap_st_conflict": 0,
             "volume_rejected": 0,
             "macd_rejected": 0,
+            "iv_too_high": 0,
+            "expiry_day_skip": 0,
             "low_confidence": 0,
             "signals": 0,
         }
@@ -109,6 +113,25 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
         if not _is_valid_intraday_time(self.bypass_time):
             self._scan_stats["time_blocked"] += 1
             return None
+
+        # ── Option chain context (IV filter + expiry-day) ───────────────────
+        option_chain = company_info.get("option_chain", {})
+        is_expiry_day = option_chain.get("is_expiry_day", False)
+
+        atm_ce_iv = option_chain.get("atm_ce_iv", 0) or 0
+        atm_pe_iv = option_chain.get("atm_pe_iv", 0) or 0
+        if atm_ce_iv > self.max_iv_to_buy or atm_pe_iv > self.max_iv_to_buy:
+            self._scan_stats["iv_too_high"] += 1
+            logger.debug(
+                f"{symbol}: IV filter — "
+                f"CE IV={atm_ce_iv:.1f}%, PE IV={atm_pe_iv:.1f}% "
+                f"(max={self.max_iv_to_buy}%)"
+            )
+            return None
+
+        atm_ce_ltp = option_chain.get("atm_ce_ltp", 0) or 0
+        atm_pe_ltp = option_chain.get("atm_pe_ltp", 0) or 0
+        atm_strike = option_chain.get("atm_strike", 0) or 0
 
         indicators_met = 0
         weighted_score = 0.0
@@ -331,6 +354,12 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
                 "mode": "options",
                 "option_type": signal_type,
                 "atm_strike": atm_strike,
+                # ATM option premiums — shown in Telegram alert
+                "atm_ce_ltp": round(atm_ce_ltp, 2),
+                "atm_pe_ltp": round(atm_pe_ltp, 2),
+                "atm_ce_iv": round(atm_ce_iv, 1),
+                "atm_pe_iv": round(atm_pe_iv, 1),
+                "is_expiry_day": is_expiry_day,
                 "supertrend_value": st_value,
                 "supertrend_direction": (
                     "bullish"

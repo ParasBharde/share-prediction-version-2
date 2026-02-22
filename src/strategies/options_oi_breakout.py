@@ -64,6 +64,8 @@ class OptionsOIBreakoutStrategy(BaseStrategy):
         self.confirm_bars = params.get("confirm_bars_below", 2)
         # Candle strength: breakout close must be in top X% of candle range
         self.min_candle_strength = params.get("min_candle_strength", 0.55)
+        # IV filter: skip if ATM IV is above this % (options too expensive)
+        self.max_iv_to_buy = params.get("max_iv_to_buy", 40.0)
 
         self._scan_stats = {
             "total": 0,
@@ -73,6 +75,8 @@ class OptionsOIBreakoutStrategy(BaseStrategy):
             "candle_weak": 0,
             "volume_rejected": 0,
             "macd_rejected": 0,
+            "iv_too_high": 0,
+            "expiry_day_skip": 0,
             "low_confidence": 0,
             "signals": 0,
         }
@@ -108,9 +112,23 @@ class OptionsOIBreakoutStrategy(BaseStrategy):
         support = option_chain.get("support", 0)
         pcr = option_chain.get("pcr", 1.0)
         underlying = option_chain.get("underlying_price", 0)
+        is_expiry_day = option_chain.get("is_expiry_day", False)
 
         if not resistance or not support or not underlying:
             self._scan_stats["no_option_chain"] += 1
+            return None
+
+        # ── IV filter: avoid buying expensive options ──────────────────────
+        # ATM IV > max_iv_to_buy means premium is inflated (news risk, expiry)
+        atm_ce_iv = option_chain.get("atm_ce_iv", 0) or 0
+        atm_pe_iv = option_chain.get("atm_pe_iv", 0) or 0
+        if atm_ce_iv > self.max_iv_to_buy or atm_pe_iv > self.max_iv_to_buy:
+            self._scan_stats["iv_too_high"] += 1
+            logger.debug(
+                f"{symbol}: IV filter rejected — "
+                f"CE IV={atm_ce_iv:.1f}%, PE IV={atm_pe_iv:.1f}% "
+                f"(max={self.max_iv_to_buy}%)"
+            )
             return None
 
         close = df["close"]
@@ -263,19 +281,26 @@ class OptionsOIBreakoutStrategy(BaseStrategy):
             return None
 
         # ── Risk management ────────────────────────────────────────────────
+        # On expiry day theta decays fast; use tighter RR (1.5 vs 2.0)
+        rr_multiple = 1.5 if is_expiry_day else 2.0
+
         if signal_type == "BUY_CE":
             # SL: 0.5% below resistance (the OI wall)
             stop_loss = round(resistance * 0.995, 2)
             risk = entry_price - stop_loss
-            target = round(entry_price + (risk * 2.0), 2)
+            target = round(entry_price + (risk * rr_multiple), 2)
             trade_signal_type = SignalType.BUY
         else:
             stop_loss = round(support * 1.005, 2)
             risk = stop_loss - entry_price
-            target = round(entry_price - (risk * 2.0), 2)
+            target = round(entry_price - (risk * rr_multiple), 2)
             trade_signal_type = SignalType.SELL
 
         atm_strike = self._find_atm_strike(option_chain, symbol, entry_price)
+
+        # ATM option premiums (critical for actual trading — know what you pay)
+        atm_ce_ltp = option_chain.get("atm_ce_ltp", 0) or 0
+        atm_pe_ltp = option_chain.get("atm_pe_ltp", 0) or 0
 
         # ── VWAP for chart visualization ───────────────────────────────────
         vwap_value = 0.0
@@ -305,9 +330,21 @@ class OptionsOIBreakoutStrategy(BaseStrategy):
                 "mode": "options",
                 "option_type": signal_type,
                 "atm_strike": atm_strike,
+                # ATM option premiums — shown in Telegram alert
+                "atm_ce_ltp": round(atm_ce_ltp, 2),
+                "atm_pe_ltp": round(atm_pe_ltp, 2),
+                "atm_ce_iv": round(atm_ce_iv, 1),
+                "atm_pe_iv": round(atm_pe_iv, 1),
                 # Levels stored for chart overlay
                 "oi_resistance": resistance,
                 "oi_support": support,
+                # Top-3 OI cluster levels (from Section 1 fix)
+                "ce_resistance_levels": option_chain.get(
+                    "ce_resistance_levels", [resistance]
+                ),
+                "pe_support_levels": option_chain.get(
+                    "pe_support_levels", [support]
+                ),
                 "vwap_value": vwap_value,
                 "pcr": pcr,
                 "max_ce_oi": option_chain.get("max_ce_oi", 0),
@@ -316,6 +353,8 @@ class OptionsOIBreakoutStrategy(BaseStrategy):
                     "resistance_break" if broke_resistance else "support_break"
                 ),
                 "confirm_bars": self.confirm_bars,
+                "is_expiry_day": is_expiry_day,
+                "rr_multiple": rr_multiple,
             },
         )
 
