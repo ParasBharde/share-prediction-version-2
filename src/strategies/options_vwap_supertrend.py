@@ -55,12 +55,12 @@ def _is_valid_intraday_time(bypass: bool = False) -> bool:
         return True
     now = datetime.now(IST)
     total_min = now.hour * 60 + now.minute
-    # Market open: 9:30 = 570 min
-    open_min = 9 * 60 + 30
-    # Avoid first 15 min
+    # NSE market open: 9:15 = 555 min
+    open_min = 9 * 60 + 15
+    # Avoid first 15 min (9:15–9:30 = choppy open)
     if total_min < open_min + _AVOID_FIRST_MINUTES:
         return False
-    # Avoid last 30 min (14:45 = 885 min)
+    # Avoid last 45 min before close (14:45; market closes at 15:30)
     close_min = 14 * 60 + 45
     if total_min >= close_min:
         return False

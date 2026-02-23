@@ -300,3 +300,89 @@ class BaseStrategy(ABC):
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
             val = float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
         return float(val)
+
+    def validate_signal_rules(
+        self,
+        entry_price: float,
+        target_price: float,
+        stop_loss: float,
+        df: pd.DataFrame,
+        min_rr: float = 1.5,
+        dma_wall_pct: float = 2.0,
+    ) -> tuple:
+        """
+        Apply three universal signal validation rules for BUY signals.
+
+        Rule 1 – Price logic   : target > entry > stop_loss.
+        Rule 2 – R:R minimum   : (target - entry) / (entry - stop_loss)
+                                 must be >= min_rr (default 1.5).
+        Rule 3 – 200-DMA wall  : do NOT signal buy when the 200-day SMA
+                                 sits within dma_wall_pct% above the entry
+                                 price (overhead resistance too close).
+
+        Args:
+            entry_price:  Planned entry price.
+            target_price: Target / take-profit price.
+            stop_loss:    Stop-loss price.
+            df:           Full OHLCV DataFrame (for 200-SMA calculation).
+            min_rr:       Minimum required R:R ratio (default 1.5).
+            dma_wall_pct: DMA proximity threshold in % (default 2.0).
+
+        Returns:
+            (True, "")              when all rules pass.
+            (False, reason_string)  on the first rule failure.
+        """
+        # Rule 1 – BUY price logic
+        if target_price <= entry_price:
+            return False, "rule1_target_not_above_entry"
+        if stop_loss >= entry_price:
+            return False, "rule1_sl_not_below_entry"
+
+        # Rule 2 – Minimum R:R
+        risk = entry_price - stop_loss
+        rr = (target_price - entry_price) / risk if risk > 0 else 0.0
+        if rr < min_rr:
+            return False, f"rule2_rr_{rr:.2f}_below_min_{min_rr}"
+
+        # Rule 3 – 200-DMA overhead resistance wall
+        if len(df) >= 200:
+            dma200 = float(df["close"].rolling(200).mean().iloc[-1])
+            wall_ceiling = entry_price * (1 + dma_wall_pct / 100)
+            if entry_price < dma200 <= wall_ceiling:
+                return False, f"rule3_dma200_{dma200:.2f}_within_{dma_wall_pct}pct_above_entry"
+
+        return True, ""
+
+    def calculate_position_size(
+        self,
+        entry_price: float,
+        stop_loss: float,
+        capital: float = 1_000_000.0,
+        risk_pct: float = 1.0,
+    ) -> tuple:
+        """
+        Risk-at-Risk position sizing.
+
+        Calculates the exact share quantity so that if the stop-loss is
+        hit, the portfolio loses exactly ``risk_pct`` % of ``capital``.
+
+            risk_amount = capital × risk_pct / 100
+            shares      = floor(risk_amount / (entry_price − stop_loss))
+
+        Args:
+            entry_price: Planned entry price (INR).
+            stop_loss:   Stop-loss price (INR).
+            capital:     Total portfolio value in INR (default ₹10,00,000).
+            risk_pct:    Max loss per trade as % of capital (default 1%).
+
+        Returns:
+            (shares: int, risk_amount: float)
+            shares is 0 when risk_per_share <= 0.
+        """
+        import math
+        risk_per_share = entry_price - stop_loss
+        if risk_per_share <= 0:
+            return 0, 0.0
+        risk_amount = capital * risk_pct / 100
+        shares = math.floor(risk_amount / risk_per_share)
+        return max(shares, 0), round(risk_amount, 2)
