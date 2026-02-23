@@ -449,7 +449,7 @@ async def run_btst_scan(
                     if signal.contributing_strategies
                     else "unknown"
                 )
-                if deduplicator.is_duplicate(signal.symbol, signal_strategy):
+                if not force_run and deduplicator.is_duplicate(signal.symbol, signal_strategy):
                     logger.debug(
                         f"[BTST] Skipping duplicate: {signal.symbol}"
                     )
