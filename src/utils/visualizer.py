@@ -247,7 +247,7 @@ class ChartVisualizer:
     # Internal PNG export helper
     # ------------------------------------------------------------------
 
-    _KALEIDO_TIMEOUT = 45  # seconds; kaleido 0.2.x can hang on Windows
+    _KALEIDO_TIMEOUT = 60  # seconds
 
     def _write_image_with_timeout(
         self,
@@ -255,48 +255,55 @@ class ChartVisualizer:
         output_path: str,
     ) -> bool:
         """
-        Call fig.write_image() in a background thread with a hard timeout.
+        Call fig.write_image() with a hard timeout.
 
-        kaleido 0.2.x on Windows occasionally deadlocks because its bundled
-        Chromium subprocess never responds (antivirus, first-run extraction,
-        or pipe-buffer issues).  Running the call in a separate thread lets
-        us abort after ``_KALEIDO_TIMEOUT`` seconds and return False instead
-        of freezing the entire scan.
+        This method is always invoked from a background thread (via
+        ``asyncio.to_thread`` in the scan scripts), so it is safe to
+        block here without freezing the asyncio event loop.
 
-        If the timeout fires the background thread is left to die on its own
-        (daemon=True by default in ThreadPoolExecutor), and the main process
-        continues normally.
+        A daemon thread is used for the actual kaleido call so that if
+        the timeout fires the process is not held up waiting for a hung
+        chromium subprocess.
 
-        Typical fix when this triggers repeatedly:
-            1. Temporarily disable real-time antivirus and retry once —
-               kaleido extracts its binary on first run.
-            2. Run ``python -c "import kaleido"`` in a clean terminal to
-               force extraction before the scan.
-            3. Upgrade: ``pip install \"kaleido>=0.2.1\"``
+        Typical cause of timeout on Windows:
+            kaleido 0.2.x bundles Chromium and extracts it on first run.
+            Antivirus can quarantine the binary mid-extraction.
+            Fix: run ``python -c "import kaleido"`` once with AV disabled,
+            then re-enable AV, or upgrade to ``kaleido>=1.0.0``.
         """
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(
-                fig.write_image, output_path, format="png", scale=2
-            )
+        import threading
+
+        result_holder: list = []
+        error_holder: list = []
+
+        def _do_write():
             try:
-                future.result(timeout=self._KALEIDO_TIMEOUT)
-                return True
-            except concurrent.futures.TimeoutError:
-                logger.error(
-                    "kaleido timed out after %ds while exporting chart to %s. "
-                    "This is a known kaleido 0.2.x issue on Windows. "
-                    "Workaround: disable antivirus briefly and run "
-                    "'python -c \"import kaleido\"' once to let it extract "
-                    "its binary, then re-enable antivirus.",
-                    self._KALEIDO_TIMEOUT,
-                    output_path,
-                )
-                return False
-            except Exception as exc:
-                logger.error(
-                    "kaleido raised an exception: %s", exc, exc_info=True
-                )
-                return False
+                fig.write_image(output_path, format="png", scale=2)
+                result_holder.append(True)
+            except Exception as exc:  # noqa: BLE001
+                error_holder.append(exc)
+
+        t = threading.Thread(target=_do_write, daemon=True)
+        t.start()
+        t.join(timeout=self._KALEIDO_TIMEOUT)
+
+        if t.is_alive():
+            # Thread is still running — kaleido hung
+            logger.error(
+                "kaleido timed out after %ds for %s. "
+                "Upgrade kaleido: pip install \"kaleido>=1.0.0\"",
+                self._KALEIDO_TIMEOUT,
+                output_path,
+            )
+            return False
+
+        if error_holder:
+            logger.error(
+                "kaleido raised an exception: %s", error_holder[0], exc_info=False
+            )
+            return False
+
+        return bool(result_holder)
 
     def _write_matplotlib_fallback(
         self,

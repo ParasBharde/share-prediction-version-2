@@ -900,8 +900,8 @@ async def scan_stocks(
                         pathlib.Path(chart_dir)
                         / f"live_{symbol}_{strategy.name.replace(' ', '_')}.png"
                     )
-                    chart_saved = visualizer.save_signal_chart(
-                        df, signal, chart_path
+                    chart_saved = await asyncio.to_thread(
+                        visualizer.save_signal_chart, df, signal, chart_path
                     )
 
                     if telegram:
