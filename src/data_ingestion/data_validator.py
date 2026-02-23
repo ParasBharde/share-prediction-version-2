@@ -295,7 +295,7 @@ class DataValidator:
 
         logger.debug(
             f"Cleaned {symbol}: {len(records)} raw → "
-            f"{len(cleaned)} valid → {len(filled)} after gap-fill"
+            f"{len(cleaned)} after dedup+gap-fill"
         )
 
         return cleaned
