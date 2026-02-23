@@ -16,7 +16,7 @@ Fallbacks:
     Flags bad data but doesn't discard it (let caller decide).
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -289,90 +289,63 @@ class DataValidator:
 
         cleaned = list(seen_dates.values())
 
-        # ── Forward-fill gaps (missing trading days) ──────────────────────────
-        # We only fill gaps ≤ 7 calendar days so we don't manufacture data
-        # across multi-week suspensions (e.g. delisted / circuit stocks).
-        filled = self._forward_fill_gaps(cleaned, symbol)
+        # Forward-fill short gaps (weekends, holidays) so strategies
+        # don't see sudden jumps caused by missing trading days.
+        cleaned = self._forward_fill_gaps(cleaned, symbol)
 
         logger.debug(
             f"Cleaned {symbol}: {len(records)} raw → "
             f"{len(cleaned)} valid → {len(filled)} after gap-fill"
         )
 
-        return filled
+        return cleaned
 
     def _forward_fill_gaps(
         self,
         records: List[Dict],
         symbol: str,
-        max_gap_days: int = 7,
+        max_fill_days: int = 5,
     ) -> List[Dict]:
         """
-        Forward-fill missing trading-day gaps in the record list.
+        Forward-fill gaps of up to *max_fill_days* consecutive missing
+        trading days by copying the last known record.
 
-        For each consecutive pair of records, if the gap between them
-        is between 2 and `max_gap_days` calendar days, insert synthetic
-        records that carry the previous close as OHLC and zero volume.
-        This prevents indicator calculations from producing NaN or wrong
-        values due to missing bars.
+        The date field is parsed to a ``datetime`` object when it arrives
+        as a string (some data sources return ISO-format strings instead
+        of ``datetime`` instances).
 
         Args:
-            records: Sorted, deduplicated OHLCV record list.
-            symbol: Stock symbol (for logging).
-            max_gap_days: Only fill gaps smaller than this many calendar days.
+            records: Sorted, deduplicated OHLCV records.
+            symbol: Stock symbol (used only for logging).
+            max_fill_days: Skip filling if the gap is larger than this
+                (e.g. long market closures / listing gaps).
 
         Returns:
-            Record list with gaps filled.
+            Records with gaps filled in-place.
         """
-        from datetime import timedelta
-
-        if len(records) < 2:
+        if len(records) <= 1:
             return records
 
+        def _to_dt(value: Any) -> datetime:
+            """Return a datetime from a datetime or ISO string."""
+            if isinstance(value, datetime):
+                return value
+            # Accept "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS …"
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d")
+
         filled: List[Dict] = [records[0]]
-        gaps_filled = 0
-
-        for i in range(1, len(records)):
-            prev = filled[-1]
-            curr = records[i]
-
-            prev_date = prev["date"]
-            curr_date = curr["date"]
-
-            # Normalize to date objects for arithmetic
-            if isinstance(prev_date, datetime):
-                prev_date = prev_date.date()
-            if isinstance(curr_date, datetime):
-                curr_date = curr_date.date()
-
+        for record in records[1:]:
+            curr_date = _to_dt(record["date"])
+            prev_date = _to_dt(filled[-1]["date"])
             gap_days = (curr_date - prev_date).days
 
-            # Fill 2–max_gap_days gaps with forward-filled bars
-            if 2 <= gap_days <= max_gap_days:
-                for d_offset in range(1, gap_days):
-                    synthetic_date = prev_date + timedelta(days=d_offset)
-                    # Skip weekends
-                    if synthetic_date.weekday() >= 5:
-                        continue
-                    prev_close = prev["close"]
-                    filled.append({
-                        "date": datetime.combine(
-                            synthetic_date, datetime.min.time()
-                        ),
-                        "open":   prev_close,
-                        "high":   prev_close,
-                        "low":    prev_close,
-                        "close":  prev_close,
-                        "volume": 0,
-                        "source": "forward_fill",
-                    })
-                    gaps_filled += 1
+            if 1 < gap_days <= max_fill_days:
+                for offset in range(1, gap_days):
+                    synthetic = dict(filled[-1])
+                    synthetic["date"] = prev_date + timedelta(days=offset)
+                    synthetic["_filled"] = True
+                    filled.append(synthetic)
 
-            filled.append(curr)
-
-        if gaps_filled > 0:
-            logger.debug(
-                f"Forward-filled {gaps_filled} missing bars for {symbol}"
-            )
+            filled.append(record)
 
         return filled
