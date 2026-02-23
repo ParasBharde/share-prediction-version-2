@@ -16,7 +16,7 @@ Fallbacks:
     Flags bad data but doesn't discard it (let caller decide).
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -281,9 +281,63 @@ class DataValidator:
 
         cleaned = list(seen_dates.values())
 
+        # Forward-fill short gaps (weekends, holidays) so strategies
+        # don't see sudden jumps caused by missing trading days.
+        cleaned = self._forward_fill_gaps(cleaned, symbol)
+
         logger.debug(
             f"Cleaned {symbol}: {len(records)} -> "
             f"{len(cleaned)} records"
         )
 
         return cleaned
+
+    def _forward_fill_gaps(
+        self,
+        records: List[Dict],
+        symbol: str,
+        max_fill_days: int = 5,
+    ) -> List[Dict]:
+        """
+        Forward-fill gaps of up to *max_fill_days* consecutive missing
+        trading days by copying the last known record.
+
+        The date field is parsed to a ``datetime`` object when it arrives
+        as a string (some data sources return ISO-format strings instead
+        of ``datetime`` instances).
+
+        Args:
+            records: Sorted, deduplicated OHLCV records.
+            symbol: Stock symbol (used only for logging).
+            max_fill_days: Skip filling if the gap is larger than this
+                (e.g. long market closures / listing gaps).
+
+        Returns:
+            Records with gaps filled in-place.
+        """
+        if len(records) <= 1:
+            return records
+
+        def _to_dt(value: Any) -> datetime:
+            """Return a datetime from a datetime or ISO string."""
+            if isinstance(value, datetime):
+                return value
+            # Accept "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS …"
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d")
+
+        filled: List[Dict] = [records[0]]
+        for record in records[1:]:
+            curr_date = _to_dt(record["date"])
+            prev_date = _to_dt(filled[-1]["date"])
+            gap_days = (curr_date - prev_date).days
+
+            if 1 < gap_days <= max_fill_days:
+                for offset in range(1, gap_days):
+                    synthetic = dict(filled[-1])
+                    synthetic["date"] = prev_date + timedelta(days=offset)
+                    synthetic["_filled"] = True
+                    filled.append(synthetic)
+
+            filled.append(record)
+
+        return filled
