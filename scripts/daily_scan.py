@@ -372,8 +372,15 @@ async def run_daily_scan(
             "signals_found": 0,
         }
 
-        # Maps symbol -> temp chart image path (generated while df is in scope)
+        # Maps symbol -> temp chart image path (populated just before alerts)
         chart_paths: dict = {}
+
+        # Cache df per symbol so we can generate charts AFTER filtering.
+        # Only the ~5-10 signals that survive ranking/confidence filtering
+        # will ever need a chart, so we avoid calling kaleido hundreds of
+        # times for signals that get dropped.
+        symbol_dfs: dict = {}   # symbol -> df.copy()
+        symbol_sigs: dict = {}  # symbol -> first TradingSignal (for chart)
 
         for i in range(0, len(stock_list), chunk_size):
             chunk = stock_list[i: i + chunk_size]
@@ -451,31 +458,14 @@ async def run_daily_scan(
                                     atr14 / sig.entry_price * 100, 2
                                 ) if sig.entry_price > 0 else 0.0
 
-                            # Generate chart while df is still in scope.
-                            # Use asyncio.to_thread so save_signal_chart
-                            # (and its internal ThreadPoolExecutor) runs
-                            # in a background thread, keeping the event loop
-                            # free to process kaleido's subprocess I/O on
-                            # Windows (ProactorEventLoop).
-                            if symbol not in chart_paths:
-                                temp_path = os.path.join(
-                                    tempfile.gettempdir(),
-                                    f"chart_{symbol}.png",
-                                )
-                                chart_ok = await asyncio.to_thread(
-                                    visualizer.save_signal_chart,
-                                    df, sig, temp_path
-                                )
-                                if chart_ok:
-                                    chart_paths[symbol] = temp_path
-                                    logger.info(
-                                        f"Chart queued for {symbol}: {temp_path}"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"Chart generation FAILED for {symbol} "
-                                        f"— alert will be text-only"
-                                    )
+                            # Save df + signal for chart generation later.
+                            # Charts are generated only for the small set of
+                            # signals that survive ranking + confidence
+                            # filtering, so kaleido is called at most ~5 times
+                            # per scan instead of hundreds of times.
+                            if symbol not in symbol_dfs:
+                                symbol_dfs[symbol] = df.copy()
+                                symbol_sigs[symbol] = sig
                     all_signals.extend(signals)
                     results["stocks_scanned"] += 1
 
@@ -654,13 +644,30 @@ async def run_daily_scan(
                         signal_dict
                     )
 
-                    # Attach chart image when available
+                    # Generate chart now — only for signals that survived
+                    # all filters, so kaleido is called at most ~5 times
+                    # per scan.  Run in asyncio.to_thread so the event loop
+                    # stays free (required on Windows ProactorEventLoop).
+                    if signal.symbol not in chart_paths and signal.symbol in symbol_dfs:
+                        _df = symbol_dfs[signal.symbol]
+                        _sig = symbol_sigs[signal.symbol]
+                        _tmp = os.path.join(
+                            tempfile.gettempdir(),
+                            f"chart_{signal.symbol}.png",
+                        )
+                        _ok = await asyncio.to_thread(
+                            visualizer.save_signal_chart, _df, _sig, _tmp
+                        )
+                        if _ok:
+                            chart_paths[signal.symbol] = _tmp
+                            logger.info(f"Chart generated for {signal.symbol}: {_tmp}")
+                        else:
+                            logger.warning(
+                                f"Chart generation failed for {signal.symbol} "
+                                f"— alert will be text-only"
+                            )
+
                     chart_path = chart_paths.get(signal.symbol)
-                    logger.info(
-                        f"Sending alert for {signal.symbol}: "
-                        f"chart_path={chart_path!r} "
-                        f"file_exists={bool(chart_path and os.path.isfile(chart_path))}"
-                    )
 
                     # Send via Telegram (or log if not configured)
                     if telegram:
