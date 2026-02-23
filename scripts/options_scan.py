@@ -851,6 +851,29 @@ async def scan_options(
     return all_signals
 
 
+def load_options_strategies() -> list:
+    """Load all options strategies from config files."""
+    strategies = []
+    for config_name in [
+        "options_oi_breakout",
+        "options_pcr_sentiment",
+        "options_vwap_supertrend",
+    ]:
+        try:
+            config = load_strategy_config(config_name)
+            if not config:
+                continue
+            strategy_name = config.get("strategy", {}).get("name", "")
+            strategy_class = STRATEGY_REGISTRY.get(strategy_name)
+            if strategy_class:
+                strategies.append(strategy_class(config))
+            else:
+                logger.debug(f"No class in registry for strategy: {strategy_name!r}")
+        except Exception as exc:
+            logger.debug(f"Failed to load {config_name}: {exc}")
+    return strategies
+
+
 async def main():
     args = parse_args()
 
