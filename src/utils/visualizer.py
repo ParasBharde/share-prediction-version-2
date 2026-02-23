@@ -100,7 +100,7 @@ class ChartVisualizer:
 
         try:
             df_plot = df.iloc[-CHART_DAYS:].copy()
-            df_plot.index = pd.to_datetime(df_plot.index)
+            df_plot.index = pd.to_datetime(df_plot.index, format="mixed", utc=True).tz_convert(None)
 
             fig = go.Figure()
 
