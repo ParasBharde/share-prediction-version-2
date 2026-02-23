@@ -316,7 +316,33 @@ async def run_daily_scan(
                 "Paper trading engine not available"
             )
 
-        # 5. Get stock list - THIS IS THE CRITICAL PART FOR 2700+ STOCKS
+        # 5. Market context check (Nifty trend + India VIX regime)
+        #    Prevents BUY signals on confirmed bearish market days.
+        from src.utils.market_context import get_market_context
+        market_ctx = await get_market_context(fallback_manager)
+        results["market_regime"] = market_ctx["regime"]
+
+        logger.info(
+            f"Market regime: {market_ctx['regime']} | "
+            f"{market_ctx['reason']}"
+        )
+
+        if not market_ctx["allow_buys"] and telegram:
+            regime_msg = (
+                f"⚠️ MARKET REGIME: *{market_ctx['regime']}*\n"
+                f"{market_ctx['reason']}\n\n"
+                f"Nifty: {market_ctx['nifty_close']} "
+                f"({market_ctx['nifty_vs_ema']:+.1f}% vs 20D EMA)\n"
+                f"India VIX: {market_ctx['vix']} "
+                f"({market_ctx['vix_regime']})\n\n"
+                f"_No BUY signals will be sent today._"
+            )
+            try:
+                await telegram.send_alert(regime_msg, priority="HIGH")
+            except Exception:
+                pass
+
+        # 6. Get stock list - THIS IS THE CRITICAL PART FOR 2700+ STOCKS
         stock_list = await _get_stock_universe(
             fallback_manager, config
         )
@@ -327,7 +353,7 @@ async def run_daily_scan(
 
         logger.info(f"📊 Scanning {len(stock_list)} stocks")
 
-        # 6. Fetch data and run strategies on all stocks
+        # 7. Fetch data and run strategies on all stocks
         all_signals: List[TradingSignal] = []
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365)
@@ -495,6 +521,20 @@ async def run_daily_scan(
         # 7. Aggregate and rank signals
         if all_signals:
             aggregated = aggregate_signals(all_signals)
+
+            # Enrich aggregated signals with sector data so that the
+            # ranking engine's sector diversification cap works correctly.
+            # We only fetch sector for the few signal symbols (not all
+            # 2700+ stocks), so this is cheap (~10-50 yfinance calls).
+            if aggregated:
+                signal_symbols = [s.symbol for s in aggregated]
+                sector_map = await _fetch_sector_map(signal_symbols)
+                for agg_sig in aggregated:
+                    sect = sector_map.get(agg_sig.symbol, "Unknown")
+                    if sect and sect != "Unknown":
+                        for ind_sig in agg_sig.individual_signals:
+                            ind_sig.setdefault("metadata", {})["sector"] = sect
+
             ranked = rank_signals(aggregated)
             filtered = filter_signals(ranked)
 
@@ -527,24 +567,39 @@ async def run_daily_scan(
                     f"{before_count} -> {len(filtered)} signals"
                 )
 
+            # Apply market context filter
+            # In BEARISH regime, suppress BUY/STRONG_BUY signals.
+            # (Options BUY_PE are stored as SELL signal_type — those pass through)
+            if not market_ctx.get("allow_buys", True):
+                before_count = len(filtered)
+                filtered = [
+                    s for s in filtered
+                    if s.signal_type.value
+                    not in ("BUY", "STRONG_BUY")
+                ]
+                suppressed = before_count - len(filtered)
+                if suppressed:
+                    logger.warning(
+                        f"Market regime {market_ctx['regime']}: "
+                        f"suppressed {suppressed} BUY signals"
+                    )
+
             results["signals_generated"] = len(filtered)
 
             # 8. Send alerts and place paper trades
             paper_trade_signals = []
             for signal in filtered:
                 try:
-                    # Check deduplication
-                    signal_strategy = (
-                        signal.contributing_strategies[0]
-                        if signal.contributing_strategies
-                        else "unknown"
-                    )
+                    # Check deduplication — key is symbol + direction so
+                    # the same BUY signal doesn't fire 3 days in a row,
+                    # but a SELL can still go through after a prior BUY.
+                    signal_direction = signal.signal_type.value
                     if deduplicator.is_duplicate(
-                        signal.symbol, signal_strategy
+                        signal.symbol, signal_direction
                     ):
                         logger.debug(
                             f"Skipping duplicate alert: "
-                            f"{signal.symbol}"
+                            f"{signal.symbol} ({signal_direction})"
                         )
                         continue
 
@@ -629,7 +684,7 @@ async def run_daily_scan(
 
                     if sent:
                         deduplicator.mark_sent(
-                            signal.symbol, signal_strategy
+                            signal.symbol, signal_direction
                         )
                         results["alerts_sent"] += 1
 
@@ -994,6 +1049,36 @@ async def _get_stock_universe(
 
     logger.error(f"❌ Failed to get stock list for {universe}")
     return []
+
+
+async def _fetch_sector_map(symbols: List[str]) -> Dict[str, str]:
+    """
+    Fetch Yahoo Finance sector for each symbol (NSE suffix appended).
+
+    Called only for stocks that produced signals, typically ≤50 symbols,
+    so the individual yfinance calls are fast.  Failures fall back to
+    "Unknown" silently — sector enrichment is best-effort.
+
+    Args:
+        symbols: List of NSE ticker symbols (e.g. ["RELIANCE", "TCS"]).
+
+    Returns:
+        Dict mapping symbol → sector string.
+    """
+    import yfinance as yf
+
+    sector_map: Dict[str, str] = {}
+    for sym in symbols:
+        try:
+            info = yf.Ticker(f"{sym}.NS").info
+            sector = info.get("sector") or "Unknown"
+            sector_map[sym] = sector
+            if sector != "Unknown":
+                logger.debug(f"Sector for {sym}: {sector}")
+        except Exception as exc:
+            logger.debug(f"Sector fetch failed for {sym}: {exc}")
+            sector_map[sym] = "Unknown"
+    return sector_map
 
 
 async def test_single_symbol(symbol: str) -> None:

@@ -3,8 +3,11 @@ Parallel Strategy Executor
 
 Purpose:
     Executes trading strategies across stocks in parallel.
-    Uses ProcessPoolExecutor for CPU-bound strategy computations.
-    Handles timeouts, chunked processing, and crash recovery.
+    Uses ThreadPoolExecutor so strategy objects and DataFrames are
+    shared in-process — no pickling required.  pandas/numpy release
+    the GIL for most operations so threading gives real concurrency
+    while avoiding the serialisation overhead and crash-on-pickle
+    failures that ProcessPoolExecutor caused.
 
 Dependencies:
     - concurrent.futures for parallel execution
@@ -25,7 +28,7 @@ import os
 import time
 import traceback
 from concurrent.futures import (
-    ProcessPoolExecutor,
+    ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
     as_completed,
 )
@@ -187,7 +190,7 @@ def _process_chunk(
     timeout: int,
 ) -> Tuple[List[TradingSignal], Dict[str, int]]:
     """
-    Process a chunk of stocks using a process pool.
+    Process a chunk of stocks using a thread pool.
 
     Submits each stock to the pool and collects results,
     handling timeouts and individual stock failures gracefully.
@@ -205,7 +208,7 @@ def _process_chunk(
     stats = {"processed": 0, "failed": 0, "timed_out": 0}
 
     try:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_symbol = {}
 
             for stock in chunk:

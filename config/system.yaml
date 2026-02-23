@@ -14,7 +14,8 @@ scanning:
   universe: "ALL"  # Options: NIFTY50, NIFTY100, NIFTY500, ALL
 
   # Signal type filter - only send alerts/trades for these signal types
-  signal_type_filter: "BUY"  # Options: BUY, SELL, BOTH
+  # BOTH: required for bearish options (BUY_PE) to reach Telegram
+  signal_type_filter: "BOTH"  # Options: BUY, SELL, BOTH
 
   # Minimum weighted confidence for a signal to be alerted.
   # Range: 0.0–1.0.  Raise to 0.75–0.80 for fewer, higher-quality alerts.
@@ -65,6 +66,12 @@ monitoring:
     enabled: true
     dsn: "${SENTRY_DSN}"  # From environment variable
     traces_sample_rate: 0.1
+
+position_sizing:
+  # Used to compute suggested share quantity shown in Telegram alerts.
+  # qty = (default_capital * risk_per_trade_pct / 100) / (entry - stop_loss)
+  default_capital: 1000000     # ₹10 lakh notional portfolio
+  risk_per_trade_pct: 1.0      # 1 % of capital at risk per trade = ₹10,000
 
 database:
   # Connection pooling

@@ -51,12 +51,16 @@ class OptionsPCRStrategy(BaseStrategy):
         # Configurable PCR thresholds
         self.bullish_pcr = params.get("bullish_pcr_threshold", 1.2)
         self.bearish_pcr = params.get("bearish_pcr_threshold", 0.8)
+        # IV filter: skip if ATM IV is above this % (options too expensive)
+        self.max_iv_to_buy = params.get("max_iv_to_buy", 40.0)
 
         self._scan_stats = {
             "total": 0,
             "no_option_chain": 0,
             "insufficient_data": 0,
             "pcr_neutral": 0,
+            "expiry_day_skip": 0,
+            "iv_too_high": 0,
             "volume_rejected": 0,
             "macd_rejected": 0,
             "low_confidence": 0,
@@ -85,9 +89,38 @@ class OptionsPCRStrategy(BaseStrategy):
 
         pcr = option_chain.get("pcr", 1.0)
         underlying = option_chain.get("underlying_price", 0)
+        is_expiry_day = option_chain.get("is_expiry_day", False)
+
         if not underlying:
             self._scan_stats["no_option_chain"] += 1
             return None
+
+        # ── Expiry-day guard: PCR is unreliable on expiry ────────────────────
+        # On expiry day, OI unwinds aggressively. PCR values spike without
+        # reflecting real sentiment. Skip this strategy on expiry day.
+        if is_expiry_day:
+            self._scan_stats["expiry_day_skip"] += 1
+            logger.debug(
+                f"{symbol}: PCR strategy skipped — today is expiry day "
+                "(PCR unreliable on expiry)"
+            )
+            return None
+
+        # ── IV filter ─────────────────────────────────────────────────────────
+        atm_ce_iv = option_chain.get("atm_ce_iv", 0) or 0
+        atm_pe_iv = option_chain.get("atm_pe_iv", 0) or 0
+        if atm_ce_iv > self.max_iv_to_buy or atm_pe_iv > self.max_iv_to_buy:
+            self._scan_stats["iv_too_high"] += 1
+            logger.debug(
+                f"{symbol}: IV filter — "
+                f"CE IV={atm_ce_iv:.1f}%, PE IV={atm_pe_iv:.1f}% "
+                f"(max={self.max_iv_to_buy}%)"
+            )
+            return None
+
+        atm_ce_ltp = option_chain.get("atm_ce_ltp", 0) or 0
+        atm_pe_ltp = option_chain.get("atm_pe_ltp", 0) or 0
+        atm_strike = option_chain.get("atm_strike", 0) or 0
 
         entry_price = float(df.iloc[-1]["close"])
         indicators_met = 0
@@ -232,9 +265,12 @@ class OptionsPCRStrategy(BaseStrategy):
             target = round(entry_price - (risk * 2.0), 2)
             trade_signal = SignalType.SELL
 
-        from src.strategies.options_oi_breakout import _LOT_SIZE
-        step = _LOT_SIZE.get(symbol.upper(), 50)
-        atm_strike = round(entry_price / step) * step
+        # Use ATM strike from option chain data if available
+        # (more accurate than rounding spot price to lot-size step)
+        if not atm_strike:
+            from src.strategies.options_oi_breakout import _LOT_SIZE
+            step = _LOT_SIZE.get(symbol.upper(), 50)
+            atm_strike = round(entry_price / step) * step
 
         self._scan_stats["signals"] += 1
 
@@ -256,6 +292,12 @@ class OptionsPCRStrategy(BaseStrategy):
                 "mode": "options",
                 "option_type": signal_type,
                 "atm_strike": atm_strike,
+                # ATM option premiums — shown in Telegram alert
+                "atm_ce_ltp": round(atm_ce_ltp, 2),
+                "atm_pe_ltp": round(atm_pe_ltp, 2),
+                "atm_ce_iv": round(atm_ce_iv, 1),
+                "atm_pe_iv": round(atm_pe_iv, 1),
+                "is_expiry_day": False,   # already skipped above if True
                 # Levels for chart overlay
                 "oi_resistance": resistance,
                 "oi_support": support,

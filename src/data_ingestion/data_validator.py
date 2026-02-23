@@ -261,12 +261,20 @@ class DataValidator:
         """
         Clean and sanitize OHLCV records.
 
+        Steps:
+        1. Validate and drop records with hard errors
+        2. Sort by date
+        3. Remove duplicates (keep last occurrence)
+        4. Forward-fill missing trading-day gaps so indicator
+           lookbacks (ATR, EMA, Supertrend) don't break on
+           stocks that were suspended or had holiday gaps.
+
         Args:
             records: Raw OHLCV records.
             symbol: Stock symbol.
 
         Returns:
-            Cleaned records list.
+            Cleaned, gap-filled records list.
         """
         valid_records, _ = self.validate_records(records, symbol)
 
@@ -274,7 +282,7 @@ class DataValidator:
         valid_records.sort(key=lambda x: x["date"])
 
         # Remove duplicates (keep last)
-        seen_dates = {}
+        seen_dates: Dict[str, Dict] = {}
         for record in valid_records:
             date_key = str(record["date"])
             seen_dates[date_key] = record
@@ -286,8 +294,8 @@ class DataValidator:
         cleaned = self._forward_fill_gaps(cleaned, symbol)
 
         logger.debug(
-            f"Cleaned {symbol}: {len(records)} -> "
-            f"{len(cleaned)} records"
+            f"Cleaned {symbol}: {len(records)} raw → "
+            f"{len(cleaned)} valid → {len(filled)} after gap-fill"
         )
 
         return cleaned

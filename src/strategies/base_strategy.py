@@ -274,7 +274,12 @@ class BaseStrategy(ABC):
         period: int = 14,
     ) -> float:
         """
-        Calculate Average True Range.
+        Calculate Average True Range using Wilder's recursive smoothing.
+
+        Wilder's formula: ATR[i] = (ATR[i-1] * (n-1) + TR[i]) / n
+        This is the standard method used by TradingView, Zerodha, and most
+        charting platforms. EWM (span=period) gives slightly different
+        (lower) values and produces tighter SL levels than intended.
 
         Args:
             df: OHLCV DataFrame.
@@ -283,15 +288,15 @@ class BaseStrategy(ABC):
         Returns:
             Current ATR value.
         """
-        high = df["high"]
-        low = df["low"]
-        close = df["close"]
+        from src.strategies.indicators.oscillators import wilder_atr
 
-        tr1 = high - low
-        tr2 = abs(high - close.shift(1))
-        tr3 = abs(low - close.shift(1))
-
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.ewm(span=period, adjust=False).mean()
-
-        return float(atr.iloc[-1])
+        atr_series = wilder_atr(df["high"], df["low"], df["close"], period)
+        val = atr_series.iloc[-1]
+        if pd.isna(val):
+            # Fallback: EWM when insufficient data for Wilder's
+            tr1 = df["high"] - df["low"]
+            tr2 = (df["high"] - df["close"].shift(1)).abs()
+            tr3 = (df["low"] - df["close"].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            val = float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
+        return float(val)

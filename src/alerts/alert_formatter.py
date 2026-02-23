@@ -45,6 +45,11 @@ _FALLBACK_TEMPLATES: Dict[str, str] = {
         "Target: {{ currency }}{{ target_price }} "
         "({{ target_pct }}%)\n"
         "R:R = 1:{{ rr_ratio }}\n"
+        "{% if suggested_qty > 0 %}"
+        "Position: {{ suggested_qty }} shares @ "
+        "{{ currency }}{{ entry_price }} "
+        "= {{ currency }}{{ suggested_investment }}\n"
+        "{% endif %}"
         "Confidence: {{ confidence }}% "
         "({{ indicators_met }}/{{ total_indicators }})\n"
         "{{ indicators_summary }}"
@@ -177,6 +182,25 @@ class AlertFormatter:
         trading_time = signal.get("trading_time", {})
         has_trading_time = bool(trading_time)
 
+        # Position sizing guidance
+        # qty = (capital × risk_pct%) / risk_per_share
+        sizing_config = load_config("system").get(
+            "position_sizing", {}
+        )
+        default_capital = sizing_config.get("default_capital", 1_000_000)
+        risk_pct = sizing_config.get("risk_per_trade_pct", 1.0)
+        risk_budget = default_capital * risk_pct / 100.0  # e.g. ₹10,000
+        if risk_amt > 0 and entry > 0:
+            suggested_qty = max(1, int(risk_budget / risk_amt))
+            suggested_investment = self._format_price(
+                suggested_qty * entry
+            )
+        else:
+            suggested_qty = 0
+            suggested_investment = "N/A"
+        # Show capital in lakh (e.g. "10L") for readability
+        capital_lakh = int(default_capital / 100_000)
+
         context = {
             "symbol": signal.get("symbol", "UNKNOWN"),
             "company_name": company_name,
@@ -200,6 +224,11 @@ class AlertFormatter:
             "strategy_count": signal.get("strategy_count", 1),
             "currency": CURRENCY_SYMBOL,
             "timestamp": now_ist().strftime("%I:%M %p IST | %d %b %Y"),
+            # Position sizing
+            "suggested_qty": suggested_qty,
+            "suggested_investment": suggested_investment,
+            "default_capital_lakh": capital_lakh,
+            "risk_per_trade_pct": risk_pct,
             # Trading time fields
             "has_trading_time": has_trading_time,
             "timeframe": trading_time.get("timeframe", "1D"),
@@ -325,13 +354,35 @@ class AlertFormatter:
         target = signal.get("target_price", 0) or 0
         sl = signal.get("stop_loss", 0) or 0
         confidence = signal.get("confidence", 0)
+        if isinstance(confidence, float) and confidence <= 1.0:
+            confidence = confidence * 100  # convert to percentage
 
         risk = abs(entry - sl)
         reward = abs(target - entry)
         rr = round(reward / risk, 1) if risk > 0 else 0
 
+        # ATM option premiums (what you actually pay)
+        atm_ce_ltp = meta.get("atm_ce_ltp", 0) or 0
+        atm_pe_ltp = meta.get("atm_pe_ltp", 0) or 0
+        atm_ce_iv  = meta.get("atm_ce_iv", 0)  or 0
+        atm_pe_iv  = meta.get("atm_pe_iv", 0)  or 0
+        is_expiry  = meta.get("is_expiry_day", False)
+
         # Key metadata lines
         extra_lines: List[str] = []
+
+        # ── Option premium block (critical for actual trading) ───────────────
+        if "CE" in option_type and atm_ce_ltp:
+            iv_str = f"  IV {atm_ce_iv:.0f}%" if atm_ce_iv else ""
+            extra_lines.append(
+                f"  Premium (CE)   : ₹{atm_ce_ltp:,.2f}{iv_str}"
+            )
+        elif "PE" in option_type and atm_pe_ltp:
+            iv_str = f"  IV {atm_pe_iv:.0f}%" if atm_pe_iv else ""
+            extra_lines.append(
+                f"  Premium (PE)   : ₹{atm_pe_ltp:,.2f}{iv_str}"
+            )
+
         if meta.get("pcr"):
             pcr_val = meta["pcr"]
             pcr_icon = (
@@ -341,12 +392,16 @@ class AlertFormatter:
             )
             extra_lines.append(f"  PCR            : {pcr_icon} {pcr_val:.3f}")
         if meta.get("oi_resistance"):
+            ce_levels = meta.get("ce_resistance_levels", [meta["oi_resistance"]])
+            levels_str = " / ".join(f"₹{lvl:,}" for lvl in ce_levels[:3])
             extra_lines.append(
-                f"  OI Resistance  : ₹{meta['oi_resistance']:,} (max CE OI)"
+                f"  OI Resistance  : {levels_str} (CE OI walls)"
             )
         if meta.get("oi_support"):
+            pe_levels = meta.get("pe_support_levels", [meta["oi_support"]])
+            levels_str = " / ".join(f"₹{lvl:,}" for lvl in pe_levels[:3])
             extra_lines.append(
-                f"  OI Support     : ₹{meta['oi_support']:,} (max PE OI)"
+                f"  OI Support     : {levels_str} (PE OI walls)"
             )
         if meta.get("vwap_value"):
             extra_lines.append(
@@ -371,6 +426,10 @@ class AlertFormatter:
             f"{'─'*38}",
             f"{action_line}",
             f"{'─'*38}",
+        ]
+        if is_expiry:
+            lines.append("  ⚠️  EXPIRY DAY — tighter target, quick exit")
+        lines += [
             f"  Strategy       : {strategy}",
             f"  Spot Entry     : ₹{entry:,.2f}",
             f"  Target (Spot)  : ₹{target:,.2f}",
