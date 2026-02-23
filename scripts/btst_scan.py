@@ -263,6 +263,8 @@ async def run_btst_scan(
 
         all_signals: List[TradingSignal] = []
         chart_paths: Dict[str, str] = {}
+        symbol_dfs: Dict[str, Any] = {}   # symbol -> df.copy()
+        symbol_sigs: Dict[str, Any] = {}  # symbol -> first TradingSignal
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365)
         chunk_size = config.get("scanning", {}).get("chunk_size", 50)
@@ -346,19 +348,11 @@ async def run_btst_scan(
                                     if sig.entry_price > 0 else 0.0
                                 )
 
-                        # Generate chart for first signal per symbol.
-                        # Run in a background thread so the event loop
-                        # stays free for kaleido's subprocess I/O on
-                        # Windows (ProactorEventLoop).
-                        if symbol not in chart_paths:
-                            chart_path = str(
-                                Path(chart_dir) / f"btst_{symbol}.png"
-                            )
-                            if await asyncio.to_thread(
-                                visualizer.save_signal_chart,
-                                df, signals[0], chart_path
-                            ):
-                                chart_paths[symbol] = chart_path
+                        # Cache df + signal; charts are generated later
+                        # only for the signals that survive filtering.
+                        if symbol not in symbol_dfs:
+                            symbol_dfs[symbol] = df.copy()
+                            symbol_sigs[symbol] = signals[0]
 
                     all_signals.extend(signals)
                     results["stocks_scanned"] += 1
@@ -477,6 +471,23 @@ async def run_btst_scan(
                 signal_dict["individual_signals"] = signal.individual_signals
 
                 message = alert_formatter.format_buy_signal(signal_dict)
+
+                # Generate chart only for this final signal
+                if signal.symbol not in chart_paths and signal.symbol in symbol_dfs:
+                    _df = symbol_dfs[signal.symbol]
+                    _sig = symbol_sigs[signal.symbol]
+                    _tmp = str(Path(chart_dir) / f"btst_{signal.symbol}.png")
+                    _ok = await asyncio.to_thread(
+                        visualizer.save_signal_chart, _df, _sig, _tmp
+                    )
+                    if _ok:
+                        chart_paths[signal.symbol] = _tmp
+                        logger.info(f"[BTST] Chart generated for {signal.symbol}")
+                    else:
+                        logger.warning(
+                            f"[BTST] Chart generation failed for {signal.symbol}"
+                        )
+
                 chart_path = chart_paths.get(signal.symbol)
 
                 if telegram and not dry_run:
