@@ -57,6 +57,10 @@ from src.data_ingestion.option_chain_fetcher import OptionChainFetcher
 from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import TradingSignal
 from src.strategies.strategy_loader import STRATEGY_REGISTRY
+import contextlib
+import io
+import yfinance as yf
+
 from src.utils.config_loader import load_strategy_config
 from src.utils.visualizer import ChartVisualizer
 
@@ -849,6 +853,36 @@ async def scan_options(
 
     await oc_fetcher.close()
     return all_signals
+
+
+# Map index names to their Yahoo Finance tickers
+_INDEX_YAHOO_MAP = {
+    "NIFTY":      "^NSEI",
+    "BANKNIFTY":  "^NSEBANK",
+    "FINNIFTY":   "^CNXFIN",
+    "MIDCPNIFTY": "^NSEMDCP50",
+}
+
+
+def fetch_index_data(symbol: str, interval: str = "5m") -> Optional[pd.DataFrame]:
+    """Fetch intraday OHLCV data for an index or stock via yfinance.
+
+    NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY are mapped to their Yahoo Finance
+    index tickers (^NSEI etc.).  Any other symbol is treated as an NSE equity
+    and the '.NS' suffix is appended.
+    """
+    yahoo_symbol = _INDEX_YAHOO_MAP.get(symbol.upper(), f"{symbol}.NS")
+    period_map = {"1m": "7d", "5m": "60d", "15m": "60d", "30m": "60d", "1h": "730d"}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ticker = yf.Ticker(yahoo_symbol)
+            df = ticker.history(period=period_map.get(interval, "60d"), interval=interval)
+        if df.empty:
+            return None
+        df.columns = [c.lower() for c in df.columns]
+        return df
+    except Exception:
+        return None
 
 
 def load_options_strategies() -> list:
