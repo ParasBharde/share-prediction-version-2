@@ -787,6 +787,13 @@ async def scan_options(
             try:
                 signal = strategy.scan(symbol, df, company_info)
                 if not signal:
+                    # Print why the strategy skipped (from its internal stats)
+                    stats = getattr(strategy, "_scan_stats", {})
+                    skip_reason = next(
+                        (f"{k}={v}" for k, v in stats.items() if v > 0),
+                        "conditions not met",
+                    )
+                    print(f"    [{strategy.name}] No signal — {skip_reason}")
                     continue
 
                 all_signals.append(signal)
