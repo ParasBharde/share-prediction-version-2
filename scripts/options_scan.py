@@ -806,7 +806,9 @@ async def scan_options(
                     Path(chart_dir)
                     / f"options_{symbol}_{signal.strategy_name.replace(' ', '_')}.png"
                 )
-                chart_saved = visualizer.save_signal_chart(df, signal, chart_path)
+                chart_saved = await asyncio.to_thread(
+                    visualizer.save_signal_chart, df, signal, chart_path
+                )
 
                 # ── Format Telegram message ────────────────────────────
                 signal_dict = signal.__dict__.copy() if hasattr(signal, "__dict__") else {}

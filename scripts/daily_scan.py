@@ -451,13 +451,19 @@ async def run_daily_scan(
                                     atr14 / sig.entry_price * 100, 2
                                 ) if sig.entry_price > 0 else 0.0
 
-                            # Generate chart while df is still in scope
+                            # Generate chart while df is still in scope.
+                            # Use asyncio.to_thread so save_signal_chart
+                            # (and its internal ThreadPoolExecutor) runs
+                            # in a background thread, keeping the event loop
+                            # free to process kaleido's subprocess I/O on
+                            # Windows (ProactorEventLoop).
                             if symbol not in chart_paths:
                                 temp_path = os.path.join(
                                     tempfile.gettempdir(),
                                     f"chart_{symbol}.png",
                                 )
-                                chart_ok = visualizer.save_signal_chart(
+                                chart_ok = await asyncio.to_thread(
+                                    visualizer.save_signal_chart,
                                     df, sig, temp_path
                                 )
                                 if chart_ok:

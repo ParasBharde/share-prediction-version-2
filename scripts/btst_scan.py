@@ -346,12 +346,16 @@ async def run_btst_scan(
                                     if sig.entry_price > 0 else 0.0
                                 )
 
-                        # Generate chart for first signal per symbol
+                        # Generate chart for first signal per symbol.
+                        # Run in a background thread so the event loop
+                        # stays free for kaleido's subprocess I/O on
+                        # Windows (ProactorEventLoop).
                         if symbol not in chart_paths:
                             chart_path = str(
                                 Path(chart_dir) / f"btst_{symbol}.png"
                             )
-                            if visualizer.save_signal_chart(
+                            if await asyncio.to_thread(
+                                visualizer.save_signal_chart,
                                 df, signals[0], chart_path
                             ):
                                 chart_paths[symbol] = chart_path
