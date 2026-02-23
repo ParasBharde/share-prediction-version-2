@@ -82,6 +82,15 @@ class MotherCandleV2Strategy(BaseStrategy):
         self.min_atr_pct = params.get("min_atr_pct", 1.0)  # Minimum ATR as % of price
         self.atr_period = params.get("atr_period", 14)
 
+        # Validation rules (configurable via YAML params)
+        self.min_rr = params.get("min_rr", 1.5)
+        self.dma_wall_pct = params.get("dma_wall_pct", 2.0)
+
+        # Risk-at-Risk position sizing
+        _ps = self.risk_config.get("position_size", {})
+        self.risk_capital = params.get("capital", 1_000_000.0)
+        self.risk_pct = _ps.get("risk_per_trade_percent", 1.0)
+
         self._scan_stats = {
             "total": 0,
             "pre_filter_rejected": 0,
@@ -89,11 +98,13 @@ class MotherCandleV2Strategy(BaseStrategy):
             "no_pattern": 0,
             "volume_rejected": 0,
             "sl_too_wide": 0,
-            "trend_rejected": 0,  # NEW
-            "weak_breakout": 0,  # NEW
-            "bad_position": 0,  # NEW
-            "failed_breakout_history": 0,  # NEW
-            "low_volatility": 0,  # NEW
+            "rr_too_low": 0,
+            "dma_wall_blocked": 0,
+            "trend_rejected": 0,
+            "weak_breakout": 0,
+            "bad_position": 0,
+            "failed_breakout_history": 0,
+            "low_volatility": 0,
             "signals": 0,
         }
 
@@ -281,6 +292,20 @@ class MotherCandleV2Strategy(BaseStrategy):
             return None
         rr_ratio = round(reward / risk, 2)
 
+        # ── Universal signal validation (Rules 1-3) ──────────────────────
+        passed, rule_reason = self.validate_signal_rules(
+            entry_price, target_price, stop_loss, df,
+            min_rr=self.min_rr,
+            dma_wall_pct=self.dma_wall_pct,
+        )
+        if not passed:
+            if "rr" in rule_reason:
+                self._scan_stats["rr_too_low"] += 1
+            elif "dma" in rule_reason:
+                self._scan_stats["dma_wall_blocked"] += 1
+            logger.debug(f"{symbol}: Signal rejected — {rule_reason}")
+            return None
+
         # ════════════════════════════════════════════════════════════
         # BUILD SIGNAL (enhanced with new filters)
         # ════════════════════════════════════════════════════════════
@@ -353,6 +378,13 @@ class MotherCandleV2Strategy(BaseStrategy):
         
         confidence = min(confidence, 1.0)
 
+        # Risk-at-Risk position sizing
+        shares, risk_amount = self.calculate_position_size(
+            entry_price, stop_loss,
+            capital=self.risk_capital,
+            risk_pct=self.risk_pct,
+        )
+
         signal = TradingSignal(
             symbol=symbol,
             company_name=company_info.get("name", symbol),
@@ -385,6 +417,10 @@ class MotherCandleV2Strategy(BaseStrategy):
                 # Chart visualizer indices (negative offsets from end of df)
                 "mother_start_idx": mother_idx,  # e.g. -7 → mother candle
                 "mother_end_idx": -2,             # last baby candle (day before breakout)
+                # Risk-at-Risk position sizing
+                "position_size_shares": shares,
+                "risk_amount_inr": risk_amount,
+                "capital": self.risk_capital,
             },
         )
 
@@ -397,6 +433,8 @@ class MotherCandleV2Strategy(BaseStrategy):
             f"| Target: {target_price} (+{self.target_pct}%) "
             f"| SL: {stop_loss} (-{round(sl_distance_pct, 1)}%) "
             f"| R:R 1:{rr_ratio} "
+            f"| Qty: {shares} "
+            f"| Risk: ₹{risk_amount:,.0f} "
             f"| Vol: {round(breakout_vol_ratio, 2)}x "
             f"| ATR: {round(atr_pct, 2)}% "
             f"| Conf: {confidence:.0%}"

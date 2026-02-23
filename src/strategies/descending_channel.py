@@ -81,6 +81,15 @@ class DescendingChannelStrategy(BaseStrategy):
             "use_lower_channel_sl", True
         )
 
+        # Validation rules (configurable via YAML params)
+        self.min_rr = params.get("min_rr", 1.5)
+        self.dma_wall_pct = params.get("dma_wall_pct", 2.0)
+
+        # Risk-at-Risk position sizing
+        _ps = self.risk_config.get("position_size", {})
+        self.risk_capital = params.get("capital", 1_000_000.0)
+        self.risk_pct = _ps.get("risk_per_trade_percent", 1.0)
+
         self._scan_stats: Dict[str, int] = {
             "total": 0,
             "pre_filter_rejected": 0,
@@ -89,6 +98,8 @@ class DescendingChannelStrategy(BaseStrategy):
             "no_pattern": 0,
             "volume_rejected": 0,
             "sl_too_wide": 0,
+            "rr_too_low": 0,
+            "dma_wall_blocked": 0,
             "low_confidence": 0,
             "signals": 0,
         }
@@ -188,6 +199,20 @@ class DescendingChannelStrategy(BaseStrategy):
             return None
         rr_ratio = round((target_price - entry_price) / risk, 2)
 
+        # ── 4b. Universal signal validation (Rules 1-3) ───────────────────
+        passed, rule_reason = self.validate_signal_rules(
+            entry_price, target_price, stop_loss, df,
+            min_rr=self.min_rr,
+            dma_wall_pct=self.dma_wall_pct,
+        )
+        if not passed:
+            if "rr" in rule_reason:
+                self._scan_stats["rr_too_low"] += 1
+            elif "dma" in rule_reason:
+                self._scan_stats["dma_wall_blocked"] += 1
+            logger.debug(f"{symbol}: Signal rejected — {rule_reason}")
+            return None
+
         # ── 5. Confidence ─────────────────────────────────────────────────
         confidence = 0.67
         avg_r2 = (
@@ -207,6 +232,13 @@ class DescendingChannelStrategy(BaseStrategy):
         if price_vs_ema > 3:
             confidence += 0.04
         confidence = min(round(confidence, 4), 1.0)
+
+        # ── 5b. Risk-at-Risk position sizing ─────────────────────────────
+        shares, risk_amount = self.calculate_position_size(
+            entry_price, stop_loss,
+            capital=self.risk_capital,
+            risk_pct=self.risk_pct,
+        )
 
         # ── 6. Build signal ───────────────────────────────────────────────
         indicator_details = {
@@ -271,6 +303,10 @@ class DescendingChannelStrategy(BaseStrategy):
                 "rr_ratio": rr_ratio,
                 "target_pct": self.target_pct,
                 "trend_ema": round(last_ema, 2),
+                # Risk-at-Risk position sizing
+                "position_size_shares": shares,
+                "risk_amount_inr": risk_amount,
+                "capital": self.risk_capital,
             },
         )
 
@@ -281,6 +317,8 @@ class DescendingChannelStrategy(BaseStrategy):
             f"| Entry: {entry_price} "
             f"| Vol: {vol_ratio:.2f}x "
             f"| R:R 1:{rr_ratio} "
+            f"| Qty: {shares} "
+            f"| Risk: ₹{risk_amount:,.0f} "
             f"| Conf: {confidence:.0%}"
         )
 
