@@ -191,7 +191,7 @@ async def run_daily_scan(
     Execute the full daily stock scanning pipeline.
 
     Args:
-        force_run: If True, skip trading day check.
+        force_run: If True, skip trading day check and deduplication.
         strategy_filter: Optional list of strategy names to run.
 
     Returns:
@@ -594,7 +594,7 @@ async def run_daily_scan(
                     # the same BUY signal doesn't fire 3 days in a row,
                     # but a SELL can still go through after a prior BUY.
                     signal_direction = signal.signal_type.value
-                    if deduplicator.is_duplicate(
+                    if not force_run and deduplicator.is_duplicate(
                         signal.symbol, signal_direction
                     ):
                         logger.debug(
