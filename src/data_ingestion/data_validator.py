@@ -333,6 +333,11 @@ class DataValidator:
             # Accept "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS …"
             return datetime.strptime(str(value)[:10], "%Y-%m-%d")
 
+        # Detect whether dates are stored as strings so synthetic records
+        # are created in the same format — prevents a mixed string/datetime
+        # index when the list is later converted to a DataFrame.
+        date_as_string = isinstance(records[0]["date"], str)
+
         filled: List[Dict] = [records[0]]
         for record in records[1:]:
             curr_date = _to_dt(record["date"])
@@ -342,7 +347,12 @@ class DataValidator:
             if 1 < gap_days <= max_fill_days:
                 for offset in range(1, gap_days):
                     synthetic = dict(filled[-1])
-                    synthetic["date"] = prev_date + timedelta(days=offset)
+                    fill_dt = prev_date + timedelta(days=offset)
+                    synthetic["date"] = (
+                        fill_dt.strftime("%Y-%m-%d")
+                        if date_as_string
+                        else fill_dt
+                    )
                     synthetic["_filled"] = True
                     filled.append(synthetic)
 
