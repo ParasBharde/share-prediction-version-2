@@ -68,6 +68,44 @@ class ChartVisualizer:
     """Generates annotated candlestick charts for trading signals."""
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_interval_label(df_plot: pd.DataFrame) -> str:
+        """Return a human-readable candle interval label (e.g. '5m', 'Daily').
+
+        Computes the median time-delta between consecutive rows in
+        *df_plot* so the label is correct regardless of which scan
+        produced the DataFrame.
+        """
+        if len(df_plot) < 2:
+            return "Daily"
+        try:
+            diffs = df_plot.index.to_series().diff().dropna()
+            median_min = diffs.median().total_seconds() / 60
+        except Exception:
+            return "Daily"
+
+        if median_min <= 1:
+            return "1m"
+        if median_min <= 5:
+            return "5m"
+        if median_min <= 15:
+            return "15m"
+        if median_min <= 30:
+            return "30m"
+        if median_min <= 65:
+            return "1H"
+        if median_min <= 245:
+            return "4H"
+        if median_min <= 1500:
+            return "Daily"
+        if median_min <= 10500:
+            return "Weekly"
+        return "Monthly"
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -170,10 +208,11 @@ class ChartVisualizer:
                 if opt_type and atm
                 else ""
             )
+            interval_label = self._detect_interval_label(df_plot)
             title = (
                 f"<b>{signal.symbol}</b>  ·  {signal.strategy_name}"
                 f"{opt_label}"
-                f"  ·  <i>Daily ({CHART_DAYS}D)</i>"
+                f"  ·  <i>{interval_label} ({len(df_plot)} bars)</i>"
                 f"   |   Entry ₹{signal.entry_price:,.2f}"
                 f"   Target ₹{signal.target_price:,.2f}"
                 f"   SL ₹{signal.stop_loss:,.2f}"
