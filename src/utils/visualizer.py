@@ -173,6 +173,7 @@ class ChartVisualizer:
             title = (
                 f"<b>{signal.symbol}</b>  ·  {signal.strategy_name}"
                 f"{opt_label}"
+                f"  ·  <i>Daily ({CHART_DAYS}D)</i>"
                 f"   |   Entry ₹{signal.entry_price:,.2f}"
                 f"   Target ₹{signal.target_price:,.2f}"
                 f"   SL ₹{signal.stop_loss:,.2f}"
@@ -458,6 +459,7 @@ class ChartVisualizer:
             conf = signal.confidence * 100
             ax.set_title(
                 f"{signal.symbol}  ·  {signal.strategy_name}"
+                f"  ·  Daily ({CHART_DAYS}D)"
                 f"   |   Entry ₹{signal.entry_price:,.2f}"
                 f"   Target ₹{signal.target_price:,.2f}"
                 f"   SL ₹{signal.stop_loss:,.2f}"
