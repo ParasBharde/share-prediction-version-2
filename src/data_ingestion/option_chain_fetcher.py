@@ -4,19 +4,17 @@ Option Chain Data Fetcher
 Fetches option chain data from NSE for NIFTY, BANKNIFTY, and individual stocks.
 Provides OI, IV, premium, Greeks data for options strategies.
 
-NSE Anti-Bot Strategy:
-    NSE blocks simple scrapers via cookie checks, Cloudflare challenges, and
-    IP-based rate limiting. This module uses a realistic browser simulation:
+Fetch strategy (in priority order):
+    1. nsepython.nse_optionchain_scrapper() — battle-tested NSE library that
+       manages sessions/cookies internally. Runs in a thread via asyncio.to_thread.
+    2. aiohttp browser-simulation fallback — used only if nsepython fails or
+       is not installed. Implements full Akamai-aware warmup sequence.
 
-    1. Rotating User-Agent pool (Chrome, Firefox, Edge fingerprints)
-    2. Full browser-like header set including Sec-Fetch-* headers
-    3. Multi-page warmup sequence (homepage → market-data → option-chain)
-    4. Per-request Referer matching what a real browser would send
-    5. Jittered sleep between requests to avoid rate-limit fingerprinting
-    6. Exponential backoff with jitter on 403/429/5xx errors
-    7. Full session recreation after N consecutive auth failures
-    8. Expiry-day awareness (switch to next expiry on expiry Thursday)
-    9. Top-3 OI clustering for more reliable support/resistance levels
+NSE Akamai Anti-Bot Notes:
+    NSE uses Akamai Bot Manager. The _abck cookie requires JavaScript execution
+    to validate — pure HTTP clients (aiohttp) receive a placeholder cookie that
+    causes NSE to return HTTP 200 with empty body. nsepython handles this via
+    a requests.Session that correctly negotiates NSE cookies.
 """
 
 import asyncio
@@ -27,6 +25,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 
 from src.monitoring.logger import get_logger
+
+# ── nsepython availability check ────────────────────────────────────────────
+try:
+    from nsepython import nse_optionchain_scrapper as _nse_scrapper
+    _NSEPYTHON_OK = True
+except ImportError:  # pragma: no cover
+    _NSEPYTHON_OK = False
+    _nse_scrapper = None  # type: ignore[assignment]
 
 logger = get_logger(__name__)
 
@@ -271,6 +277,40 @@ class OptionChainFetcher:
         # Longer sleep before retry to let any IP-level block expire
         await asyncio.sleep(random.uniform(5, 10))
 
+    # ── nsepython primary fetch ───────────────────────────────────────────────
+
+    async def _fetch_via_nsepython(self, symbol: str) -> Optional[Dict]:
+        """
+        Fetch raw NSE option chain JSON via nsepython (synchronous, run in thread).
+
+        nsepython.nse_optionchain_scrapper() manages its own requests.Session,
+        correctly negotiates NSE cookies (including Akamai), and returns the
+        same JSON structure that NSE's API returns.
+
+        Returns the raw dict (same schema accepted by _parse_option_chain),
+        or None if nsepython is not installed or the call fails.
+        """
+        if not _NSEPYTHON_OK or _nse_scrapper is None:
+            logger.debug("nsepython not available — skipping primary fetch path")
+            return None
+
+        try:
+            logger.info(f"Fetching {symbol} option chain via nsepython …")
+            # Run synchronous nsepython in a thread so we don't block the event loop
+            raw = await asyncio.to_thread(_nse_scrapper, symbol)
+            if raw and isinstance(raw, dict) and raw.get("records"):
+                logger.info(
+                    f"nsepython fetch OK for {symbol} "
+                    f"({len(raw.get('records', {}).get('data', []))} records)"
+                )
+                return raw
+            logger.warning(
+                f"nsepython returned empty/invalid data for {symbol}: {type(raw)}"
+            )
+        except Exception as exc:
+            logger.warning(f"nsepython fetch failed for {symbol}: {exc}")
+        return None
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def fetch_option_chain(
@@ -280,12 +320,9 @@ class OptionChainFetcher:
         """
         Fetch full option chain data for a symbol.
 
-        Implements:
-        - Cookie-based session warmup before each API call
-        - Exponential backoff with jitter on 403/429/5xx
-        - Full session recreation after _MAX_AUTH_FAILURES consecutive failures
-        - Expiry-day awareness (selects next expiry on expiry day)
-        - Top-3 OI clustering for support/resistance
+        Fetch order:
+          1. nsepython.nse_optionchain_scrapper() — handles Akamai cookies natively
+          2. aiohttp browser-simulation fallback (5 attempts with backoff)
 
         Args:
             symbol: Index name (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
@@ -296,19 +333,25 @@ class OptionChainFetcher:
         """
         symbol = symbol.upper()
 
+        # ── 1. Try nsepython first (best NSE compatibility) ───────────────────
+        raw = await self._fetch_via_nsepython(symbol)
+        if raw:
+            return self._parse_option_chain(raw, symbol)
+
+        # ── 2. Fallback: aiohttp browser-simulation ───────────────────────────
+        logger.info(
+            f"nsepython unavailable/failed for {symbol} — "
+            f"falling back to aiohttp session"
+        )
+
         # Choose the correct endpoint
         if symbol in _WEEKLY_EXPIRY_INDICES:
             url = NSE_OPTION_CHAIN_URL
-            referer = f"{NSE_BASE_URL}/option-chain"
         else:
             url = NSE_EQUITY_OPTION_URL
-            referer = f"{NSE_BASE_URL}/option-chain"
 
         params = {"symbol": symbol}
-        # Symbol-specific page URL — this is what a real browser visits before
-        # the API call. NSE's Akamai validates that this page was loaded first.
         symbol_page_url = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
-        # The API referer must match the symbol-specific page, not the generic one
         api_referer = symbol_page_url
 
         max_attempts = 5
@@ -322,8 +365,7 @@ class OptionChainFetcher:
                     f"Warmup failed on attempt {attempt + 1}/{max_attempts}"
                 )
 
-            # Visit the symbol-specific option chain page so NSE knows the user
-            # navigated here (Akamai validates the page-visit before API access).
+            # Visit the symbol-specific option chain page before the API call
             session = await self._get_session()
             try:
                 async with session.get(
@@ -339,7 +381,6 @@ class OptionChainFetcher:
                 logger.debug(
                     f"NSE symbol page visit failed for {symbol}: {page_exc}"
                 )
-            # Brief human-like pause after page load, before API call
             await asyncio.sleep(random.uniform(1.0, 2.0))
 
             headers = _build_api_headers(self._user_agent, api_referer)
@@ -368,10 +409,11 @@ class OptionChainFetcher:
                         if data:
                             self._auth_failures = 0
                             return self._parse_option_chain(data, symbol)
-                        # Empty body — treat as soft failure
                         logger.warning(
                             f"NSE returned empty body for {symbol} "
-                            f"(attempt {attempt + 1})"
+                            f"(attempt {attempt + 1}) — "
+                            f"Akamai bot-detection likely triggered. "
+                            f"Install nsepython: pip install nsepython"
                         )
 
                     elif status in (401, 403):
@@ -383,11 +425,9 @@ class OptionChainFetcher:
                         if self._auth_failures >= _MAX_AUTH_FAILURES:
                             await self._recreate_session()
                         else:
-                            # Force re-warmup on next attempt
                             self._last_warmup = None
 
                     elif status == 429:
-                        # Rate-limited — respect Retry-After header
                         retry_after = int(
                             resp.headers.get("Retry-After", str(int(base_delay * 4)))
                         )
@@ -439,7 +479,8 @@ class OptionChainFetcher:
                 await asyncio.sleep(delay)
 
         logger.error(
-            f"All {max_attempts} attempts failed for {symbol} option chain"
+            f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
+            f"Ensure nsepython is installed: pip install nsepython"
         )
         return None
 

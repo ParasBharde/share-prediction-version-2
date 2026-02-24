@@ -69,6 +69,14 @@ try:
 except Exception:
     TelegramBot = None
 
+try:
+    from nsepython import nse_optionchain_scrapper
+    _NSEPYTHON_AVAILABLE = True
+except ImportError:
+    _NSEPYTHON_AVAILABLE = False
+    def nse_optionchain_scrapper(symbol, *args, **kwargs):  # type: ignore[misc]
+        raise RuntimeError("nsepython not installed — run: pip install nsepython")
+
 IST = pytz.timezone("Asia/Kolkata")
 logger = get_logger(__name__)
 
@@ -164,22 +172,25 @@ def parse_args():
 def get_spot_price(index: str) -> float:
     """
     Get current spot price of index.
-    Uses option chain data as it contains underlying value.
+    Uses option chain data (nsepython) as it contains the underlying value.
     """
+    if not _NSEPYTHON_AVAILABLE:
+        logger.warning("nsepython not installed — spot price unavailable. Run: pip install nsepython")
+        return 0.0
     try:
         # Fetch option chain - it contains underlying (spot) price
         chain = nse_optionchain_scrapper(index)
-        
+
         if not chain:
             return 0.0
-        
+
         # Extract underlying value (spot price)
         records = chain.get("records", {})
         underlying_value = records.get("underlyingValue")
-        
+
         if underlying_value:
             return float(underlying_value)
-        
+
         # Alternative: Try strikePrices and find ATM
         # (spot is usually near ATM strike)
         data = records.get("data", [])
@@ -188,9 +199,9 @@ def get_spot_price(index: str) -> float:
             strikes = [d.get("strikePrice", 0) for d in data]
             if strikes:
                 return float(sorted(strikes)[len(strikes)//2])
-        
+
         return 0.0
-        
+
     except Exception as e:
         print(f"  ❌ Error fetching spot for {index}: {e}")
         # Last resort: Use fallback values (update these daily)
@@ -205,21 +216,16 @@ def get_spot_price(index: str) -> float:
 
 def get_expiry_dates(index: str) -> List[str]:
     """Get available expiry dates for index."""
+    if not _NSEPYTHON_AVAILABLE:
+        logger.warning("nsepython not installed — cannot fetch expiry dates. Run: pip install nsepython")
+        return []
     try:
-        # Get option chain
-        if index == "NIFTY":
-            data = nse_optionchain_scrapper("NIFTY")
-        elif index == "BANKNIFTY":
-            data = nse_optionchain_scrapper("BANKNIFTY")
-        elif index == "FINNIFTY":
-            data = nse_optionchain_scrapper("FINNIFTY")
-        else:
-            return []
-        
+        data = nse_optionchain_scrapper(index)
+
         # Extract expiry dates
         expiries = data.get("records", {}).get("expiryDates", [])
         return expiries[:4]  # Return next 4 expiries
-    
+
     except Exception as e:
         print(f"  ❌ Error fetching expiries for {index}: {e}")
         return []
@@ -234,11 +240,14 @@ def get_options_chain(index: str, expiry: str) -> pd.DataFrame:
     - CE_ltp, CE_bid, CE_ask, CE_oi, CE_volume, CE_iv, CE_delta
     - PE_ltp, PE_bid, PE_ask, PE_oi, PE_volume, PE_iv, PE_delta
     """
+    if not _NSEPYTHON_AVAILABLE:
+        print(f"    ❌ nsepython not installed — cannot fetch option chain. Run: pip install nsepython")
+        return pd.DataFrame()
     try:
         # Fetch option chain
         print(f"    Fetching option chain for {index}...", end=" ")
         data = nse_optionchain_scrapper(index)
-        
+
         if not data:
             print(f"No data returned")
             return pd.DataFrame()
