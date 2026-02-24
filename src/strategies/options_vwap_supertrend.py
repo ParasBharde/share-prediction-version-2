@@ -303,7 +303,6 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
             trade_signal = SignalType.SELL
 
         # Round ATM strike to index lot size
-        from src.strategies.options_oi_breakout import _LOT_SIZE
         step = _LOT_SIZE.get(symbol.upper(), 50)
         atm_strike = round(entry_price / step) * step
 
