@@ -726,10 +726,13 @@ async def scan_options(
     send_telegram: bool = False,
     dry_run: bool = False,
     chart_dir: str = "/tmp",
+    oc_fetcher=None,          # Shared fetcher — pass from main() to reuse browser
 ) -> List[TradingSignal]:
     """Scan indices for options trading signals with chart images."""
     all_signals = []
-    oc_fetcher = OptionChainFetcher()
+    _own_fetcher = oc_fetcher is None
+    if _own_fetcher:
+        oc_fetcher = OptionChainFetcher()
     alert_formatter = AlertFormatter()
     visualizer = ChartVisualizer()
     Path(chart_dir).mkdir(parents=True, exist_ok=True)
@@ -870,7 +873,8 @@ async def scan_options(
             except Exception as e:
                 logger.debug(f"{symbol}/{strategy.name}: {e}")
 
-    await oc_fetcher.close()
+    if _own_fetcher:
+        await oc_fetcher.close()
     return all_signals
 
 
@@ -945,32 +949,39 @@ async def main():
 
         scan_count = 0
         
-        while True:
-            scan_count += 1
-            print(f"\n{'#'*55}")
-            print(
-                f"  OPTIONS SCAN #{scan_count} — "
-                f"{datetime.now().strftime('%H:%M:%S IST')}"
-            )
-            print(f"{'#'*55}")
+        # Create ONE shared fetcher for the entire session — keeps the
+        # Playwright browser alive between scans (no re-launch overhead)
+        shared_fetcher = OptionChainFetcher()
+        try:
+            while True:
+                scan_count += 1
+                print(f"\n{'#'*55}")
+                print(
+                    f"  OPTIONS SCAN #{scan_count} — "
+                    f"{datetime.now().strftime('%H:%M:%S IST')}"
+                )
+                print(f"{'#'*55}")
 
-            signals = await scan_options(
-                symbols, args.interval, strategies,
-                send_telegram=args.telegram,
-                dry_run=args.dry_run,
-                chart_dir=args.chart_dir,
-            )
+                signals = await scan_options(
+                    symbols, args.interval, strategies,
+                    send_telegram=args.telegram,
+                    dry_run=args.dry_run,
+                    chart_dir=args.chart_dir,
+                    oc_fetcher=shared_fetcher,
+                )
 
-            if signals:
-                print(f"\n  TOTAL SIGNALS: {len(signals)}")
-            else:
-                print(f"\n  No signals. Next scan in {args.repeat} min...")
+                if signals:
+                    print(f"\n  TOTAL SIGNALS: {len(signals)}")
+                else:
+                    print(f"\n  No signals. Next scan in {args.repeat} min...")
 
-            try:
-                time.sleep(args.repeat * 60)
-            except KeyboardInterrupt:
-                print("\nStopped.")
-                break
+                try:
+                    time.sleep(args.repeat * 60)
+                except KeyboardInterrupt:
+                    print("\nStopped.")
+                    break
+        finally:
+            await shared_fetcher.close()
     else:
         signals = await scan_options(
             symbols, args.interval, strategies,

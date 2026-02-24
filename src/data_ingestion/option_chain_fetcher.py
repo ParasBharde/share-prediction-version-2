@@ -369,7 +369,13 @@ class OptionChainFetcher:
     # ── Playwright real-browser fetch ─────────────────────────────────────────
 
     async def _ensure_playwright(self) -> None:
-        """Launch the Playwright Chromium browser if not already running."""
+        """
+        Launch the Playwright Chromium browser if not already running.
+
+        Uses system Chrome (if installed) before falling back to Playwright's
+        bundled Chromium — system Chrome has a real TLS fingerprint that Akamai
+        is less likely to block.
+        """
         if self._pw_browser is not None:
             try:
                 if self._pw_browser.is_connected():
@@ -381,25 +387,67 @@ class OptionChainFetcher:
             self._pw_playwright = None
 
         if not _PLAYWRIGHT_OK or _async_playwright is None:
-            raise RuntimeError("playwright not installed — run: pip install playwright && playwright install chromium")
+            raise RuntimeError(
+                "playwright not installed — run: "
+                "pip install playwright && playwright install chromium"
+            )
 
         self._pw_playwright = await _async_playwright().__aenter__()
+
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            # Handle MITM proxies / corporate SSL inspection
+            "--ignore-certificate-errors",
+            "--ignore-ssl-errors",
+            # Bypass system proxy (often causes ERR_HTTP2_PROTOCOL_ERROR)
+            "--no-proxy-server",
+            "--disable-extensions",
+        ]
+
+        # Prefer system Chrome — it has a genuine TLS fingerprint that
+        # Akamai recognises as a real browser, unlike "Chrome for Testing"
+        import os, sys
+        system_chrome: Optional[str] = None
+        if sys.platform == "win32":
+            candidates = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expanduser(
+                    r"~\AppData\Local\Google\Chrome\Application\chrome.exe"
+                ),
+            ]
+            system_chrome = next(
+                (p for p in candidates if os.path.exists(p)), None
+            )
+
         self._pw_browser = await self._pw_playwright.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
+            executable_path=system_chrome,   # None → use Playwright's bundled Chrome
+            args=launch_args,
         )
-        logger.info("Playwright Chromium browser launched")
+        chrome_label = f"system Chrome ({system_chrome})" if system_chrome else "Playwright Chromium"
+        logger.info(f"Playwright browser launched: {chrome_label}")
 
     async def _fetch_via_playwright(self, symbol: str) -> Optional[Dict]:
         """
         Fetch NSE option chain using a real Chromium browser via Playwright.
 
-        Playwright executes JavaScript, which causes Akamai's _abck cookie
-        validation to succeed — the only reliable way to bypass NSE's bot
-        detection without an official API key.
+        Strategy:
+          1. Navigate to NSE homepage — lets Akamai set and validate cookies
+             via JavaScript execution.
+          2. Navigate to the option chain page — NSE's JS fires the API XHR.
+          3. Intercept the XHR response. If it misses, evaluate a fetch() call
+             from inside the browser JS context (cookies are already valid).
 
-        The browser is kept alive between calls for performance; only the
-        first call incurs the browser-launch overhead (~2–5 s).
+        Navigation errors are handled gracefully: even if goto() fails, the
+        JS evaluate() is still attempted with whatever cookies exist.
+
+        Browser is kept alive between calls (shared fetcher). Only the first
+        call of the session incurs the browser-launch overhead (~3–8 s).
 
         Install with: pip install playwright && playwright install chromium
         """
@@ -425,10 +473,24 @@ class OptionChainFetcher:
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
+                    "Chrome/124.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 800},
+                ignore_https_errors=True,
             )
+
+            # Patch away automation signals before any page loads
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [{name: 'Chrome PDF Plugin'}]
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-IN', 'en-US', 'en']
+                });
+            """)
+
             page = await context.new_page()
 
             # Intercept the XHR response that NSE's JS makes to the API
@@ -446,30 +508,53 @@ class OptionChainFetcher:
             page.on("response", _on_response)
 
             try:
-                await page.goto(
-                    f"{NSE_BASE_URL}/option-chain?symbol={symbol}",
-                    wait_until="domcontentloaded",
-                    timeout=30_000,
-                )
-                # Wait for NSE's JavaScript to fire the option chain XHR
-                await asyncio.sleep(4)
+                # ── Step 1: Homepage visit so Akamai JS can set _abck ─────────
+                try:
+                    await page.goto(
+                        NSE_BASE_URL,
+                        wait_until="domcontentloaded",
+                        timeout=20_000,
+                    )
+                    await asyncio.sleep(2)
+                    logger.debug("Playwright: NSE homepage loaded OK")
+                except Exception as hp_exc:
+                    logger.debug(f"Playwright: homepage navigation failed: {hp_exc}")
 
+                # ── Step 2: Option chain page (NSE JS fires the API XHR) ─────
+                try:
+                    await page.goto(
+                        f"{NSE_BASE_URL}/option-chain?symbol={symbol}",
+                        wait_until="domcontentloaded",
+                        timeout=30_000,
+                    )
+                    # Give NSE's JavaScript time to fire the option chain XHR
+                    await asyncio.sleep(5)
+                    logger.debug("Playwright: option-chain page loaded OK")
+                except Exception as nav_exc:
+                    logger.debug(
+                        f"Playwright: option-chain page navigation failed "
+                        f"(will still try JS fetch): {nav_exc}"
+                    )
+                    await asyncio.sleep(2)
+
+                # ── Step 3: Try JS fetch from within browser if XHR missed ───
                 raw = captured.get("data")
                 if not raw:
-                    # Fallback: call API directly from the browser's JS context
-                    # (cookies already set by Akamai at this point)
-                    raw = await page.evaluate(
-                        f"""async () => {{
-                            try {{
-                                const r = await fetch(
-                                    '{api_path_fragment}?symbol={symbol}',
-                                    {{credentials: 'include',
-                                     headers: {{'Accept': 'application/json'}}}}
-                                );
-                                return r.ok ? await r.json() : null;
-                            }} catch(e) {{ return null; }}
-                        }}"""
-                    )
+                    try:
+                        raw = await page.evaluate(
+                            f"""async () => {{
+                                try {{
+                                    const r = await fetch(
+                                        '{api_path_fragment}?symbol={symbol}',
+                                        {{credentials: 'include',
+                                         headers: {{'Accept': 'application/json'}}}}
+                                    );
+                                    return r.ok ? await r.json() : null;
+                                }} catch(e) {{ return null; }}
+                            }}"""
+                        )
+                    except Exception as eval_exc:
+                        logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
 
                 if raw and isinstance(raw, dict) and raw.get("records"):
                     logger.info(
@@ -478,9 +563,10 @@ class OptionChainFetcher:
                     )
                     return raw
 
+                keys = list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__
                 logger.warning(
                     f"Playwright fetch yielded no valid data for {symbol}. "
-                    f"keys={list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__}"
+                    f"keys={keys}"
                 )
             finally:
                 await page.close()
