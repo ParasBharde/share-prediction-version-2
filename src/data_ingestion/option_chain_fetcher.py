@@ -7,18 +7,19 @@ Provides OI, IV, premium, Greeks data for options strategies.
 Fetch strategy (in priority order):
     1. nsepython.nse_optionchain_scrapper() — battle-tested NSE library that
        manages sessions/cookies internally. Runs in a thread via asyncio.to_thread.
-    2. curl_cffi Chrome impersonation — impersonates Chrome's TLS fingerprint
-       (JA3/JA4 hashes) so Akamai accepts it as a real browser session.
-       Install with: pip install curl_cffi
-    3. aiohttp browser-simulation fallback — last resort; Akamai usually blocks
-       this because it cannot execute JavaScript to validate the _abck cookie.
+    2. Playwright (real Chromium browser) — executes JavaScript so Akamai's
+       _abck cookie validation passes. The only reliable way to get live NSE
+       data without an official API key.
+       Install with: pip install playwright && playwright install chromium
+    3. aiohttp browser-simulation fallback — last resort; always blocked by
+       Akamai because it cannot execute JavaScript to validate _abck.
 
 NSE Akamai Anti-Bot Notes:
     NSE uses Akamai Bot Manager. The _abck cookie requires JavaScript execution
-    to validate. Pure Python HTTP clients (requests, aiohttp) receive a
-    placeholder cookie that Akamai rejects, returning HTTP 200 with empty body.
-    curl_cffi bypasses this by impersonating Chrome's TLS/HTTP2 fingerprint.
-    nsepython wraps requests and has the same limitation.
+    to validate. Pure Python HTTP clients (requests, aiohttp, nsepython,
+    curl_cffi) all receive a placeholder _abck cookie. NSE's server silently
+    returns HTTP 200 with body {} for any request whose _abck is invalid.
+    Playwright runs real Chrome JS which generates a valid _abck cookie.
 """
 
 import asyncio
@@ -39,14 +40,14 @@ except ImportError:  # pragma: no cover
     _NSEPYTHON_OK = False
     _nse_scrapper = None  # type: ignore[assignment]
 
-# ── curl_cffi availability check (Chrome TLS impersonation) ─────────────────
-# Install with: pip install curl_cffi
+# ── Playwright availability check (real browser — bypasses Akamai fully) ────
+# Install with: pip install playwright && playwright install chromium
 try:
-    import curl_cffi.requests as _cffi_requests  # type: ignore[import]
-    _CURL_CFFI_OK = True
+    from playwright.async_api import async_playwright as _async_playwright  # type: ignore[import]
+    _PLAYWRIGHT_OK = True
 except ImportError:
-    _CURL_CFFI_OK = False
-    _cffi_requests = None  # type: ignore[assignment]
+    _PLAYWRIGHT_OK = False
+    _async_playwright = None  # type: ignore[assignment]
 
 logger = get_logger(__name__)
 
@@ -191,6 +192,9 @@ class OptionChainFetcher:
         self._last_warmup: Optional[datetime] = None
         # Re-warm session every 4 minutes to keep cookies fresh
         self._warmup_ttl_seconds: int = 240
+        # Playwright browser (lazily initialised on first use)
+        self._pw_playwright = None
+        self._pw_browser = None
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -362,75 +366,128 @@ class OptionChainFetcher:
             logger.warning(f"nsepython fetch failed for {symbol}: {exc}")
         return None
 
-    # ── curl_cffi Chrome-impersonation fetch ──────────────────────────────────
+    # ── Playwright real-browser fetch ─────────────────────────────────────────
 
-    async def _fetch_via_curl_cffi(self, symbol: str) -> Optional[Dict]:
+    async def _ensure_playwright(self) -> None:
+        """Launch the Playwright Chromium browser if not already running."""
+        if self._pw_browser is not None:
+            try:
+                if self._pw_browser.is_connected():
+                    return
+            except Exception:
+                pass
+            # Browser disconnected — reset
+            self._pw_browser = None
+            self._pw_playwright = None
+
+        if not _PLAYWRIGHT_OK or _async_playwright is None:
+            raise RuntimeError("playwright not installed — run: pip install playwright && playwright install chromium")
+
+        self._pw_playwright = await _async_playwright().__aenter__()
+        self._pw_browser = await self._pw_playwright.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        logger.info("Playwright Chromium browser launched")
+
+    async def _fetch_via_playwright(self, symbol: str) -> Optional[Dict]:
         """
-        Fetch NSE option chain using curl_cffi which impersonates Chrome's TLS
-        fingerprint (JA3/JA4). Akamai accepts this as a genuine browser session
-        and returns valid data — no JavaScript execution required.
+        Fetch NSE option chain using a real Chromium browser via Playwright.
 
-        Install the dependency with: pip install curl_cffi
+        Playwright executes JavaScript, which causes Akamai's _abck cookie
+        validation to succeed — the only reliable way to bypass NSE's bot
+        detection without an official API key.
 
-        Returns the raw NSE dict (same schema as _parse_option_chain expects),
-        or None if curl_cffi is not installed or the call fails.
+        The browser is kept alive between calls for performance; only the
+        first call incurs the browser-launch overhead (~2–5 s).
+
+        Install with: pip install playwright && playwright install chromium
         """
-        if not _CURL_CFFI_OK or _cffi_requests is None:
-            return None
-
-        if symbol in _WEEKLY_EXPIRY_INDICES:
-            api_url = NSE_OPTION_CHAIN_URL
-        else:
-            api_url = NSE_EQUITY_OPTION_URL
-
-        def _sync_fetch() -> Optional[Dict]:
-            session = _cffi_requests.Session(impersonate="chrome120")
-            headers = {
-                "Accept-Language": "en-US,en;q=0.9",
-                "DNT": "1",
-            }
-            # Step 1 — visit homepage so NSE sets session cookies
-            session.get(NSE_BASE_URL, headers=headers, timeout=20)
-            time.sleep(random.uniform(1.0, 2.0))
-            # Step 2 — visit the option chain page (sets referer cookie)
-            oc_page = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
-            session.get(oc_page, headers=headers, timeout=20)
-            time.sleep(random.uniform(0.8, 1.5))
-            # Step 3 — fetch the JSON API
-            api_headers = {
-                **headers,
-                "Accept": "application/json, text/plain, */*",
-                "Referer": oc_page,
-                "X-Requested-With": "XMLHttpRequest",
-            }
-            resp = session.get(
-                api_url,
-                params={"symbol": symbol},
-                headers=api_headers,
-                timeout=20,
-            )
-            if resp.status_code == 200:
-                return resp.json()
+        if not _PLAYWRIGHT_OK:
             return None
 
         try:
-            logger.info(
-                f"Fetching {symbol} option chain via curl_cffi "
-                f"(Chrome impersonation) …"
-            )
-            raw = await asyncio.to_thread(_sync_fetch)
-            if raw and isinstance(raw, dict) and raw.get("records"):
-                logger.info(
-                    f"curl_cffi fetch OK for {symbol} "
-                    f"({len(raw.get('records', {}).get('data', []))} records)"
-                )
-                return raw
-            logger.warning(
-                f"curl_cffi returned empty/invalid data for {symbol}: "
-                f"keys={list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__}"
-            )
+            await self._ensure_playwright()
         except Exception as exc:
-            logger.warning(f"curl_cffi fetch failed for {symbol}: {exc}")
+            logger.warning(f"Playwright init failed: {exc}")
+            return None
+
+        if symbol in _WEEKLY_EXPIRY_INDICES:
+            api_path_fragment = "/api/option-chain-indices"
+        else:
+            api_path_fragment = "/api/option-chain-equities"
+
+        try:
+            logger.info(
+                f"Fetching {symbol} option chain via Playwright (real browser) …"
+            )
+            context = await self._pw_browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
+            page = await context.new_page()
+
+            # Intercept the XHR response that NSE's JS makes to the API
+            captured: Dict = {}
+
+            async def _on_response(response) -> None:
+                if api_path_fragment in response.url and response.status == 200:
+                    try:
+                        data = await response.json()
+                        if isinstance(data, dict) and data.get("records"):
+                            captured["data"] = data
+                    except Exception:
+                        pass
+
+            page.on("response", _on_response)
+
+            try:
+                await page.goto(
+                    f"{NSE_BASE_URL}/option-chain?symbol={symbol}",
+                    wait_until="domcontentloaded",
+                    timeout=30_000,
+                )
+                # Wait for NSE's JavaScript to fire the option chain XHR
+                await asyncio.sleep(4)
+
+                raw = captured.get("data")
+                if not raw:
+                    # Fallback: call API directly from the browser's JS context
+                    # (cookies already set by Akamai at this point)
+                    raw = await page.evaluate(
+                        f"""async () => {{
+                            try {{
+                                const r = await fetch(
+                                    '{api_path_fragment}?symbol={symbol}',
+                                    {{credentials: 'include',
+                                     headers: {{'Accept': 'application/json'}}}}
+                                );
+                                return r.ok ? await r.json() : null;
+                            }} catch(e) {{ return null; }}
+                        }}"""
+                    )
+
+                if raw and isinstance(raw, dict) and raw.get("records"):
+                    logger.info(
+                        f"Playwright fetch OK for {symbol} "
+                        f"({len(raw.get('records', {}).get('data', []))} records)"
+                    )
+                    return raw
+
+                logger.warning(
+                    f"Playwright fetch yielded no valid data for {symbol}. "
+                    f"keys={list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__}"
+                )
+            finally:
+                await page.close()
+                await context.close()
+
+        except Exception as exc:
+            logger.warning(f"Playwright fetch failed for {symbol}: {exc}")
         return None
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -460,21 +517,21 @@ class OptionChainFetcher:
         if raw:
             return self._parse_option_chain(raw, symbol)
 
-        # ── 2. curl_cffi Chrome impersonation (bypasses Akamai TLS checks) ────
-        if _CURL_CFFI_OK:
-            raw = await self._fetch_via_curl_cffi(symbol)
+        # ── 2. Playwright real browser (executes JS — fully bypasses Akamai) ───
+        if _PLAYWRIGHT_OK:
+            raw = await self._fetch_via_playwright(symbol)
             if raw:
                 return self._parse_option_chain(raw, symbol)
         else:
             logger.warning(
-                f"curl_cffi not installed — Akamai will likely block aiohttp too. "
-                f"Fix: pip install curl_cffi"
+                "playwright not installed — Akamai will block all pure-Python "
+                "HTTP clients. Fix: pip install playwright && playwright install chromium"
             )
 
-        # ── 3. Fallback: aiohttp browser-simulation (often blocked by Akamai) ─
+        # ── 3. Fallback: aiohttp browser-simulation (blocked by Akamai) ───────
         logger.info(
-            f"curl_cffi/nsepython unavailable/failed for {symbol} — "
-            f"falling back to aiohttp session (may be blocked by Akamai)"
+            f"nsepython/playwright failed for {symbol} — "
+            f"falling back to aiohttp (likely blocked by Akamai)"
         )
 
         # Choose the correct endpoint
@@ -761,7 +818,19 @@ class OptionChainFetcher:
         }
 
     async def close(self) -> None:
-        """Close the underlying HTTP session."""
+        """Close the HTTP session and Playwright browser (if open)."""
+        if self._pw_browser is not None:
+            try:
+                await self._pw_browser.close()
+            except Exception:
+                pass
+            self._pw_browser = None
+        if self._pw_playwright is not None:
+            try:
+                await self._pw_playwright.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._pw_playwright = None
         if self._session and not self._session.closed:
             await self._session.close()
             await asyncio.sleep(0.25)
