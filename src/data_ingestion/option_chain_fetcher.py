@@ -7,18 +7,23 @@ Provides OI, IV, premium, Greeks data for options strategies.
 Fetch strategy (in priority order):
     1. nsepython.nse_optionchain_scrapper() — battle-tested NSE library that
        manages sessions/cookies internally. Runs in a thread via asyncio.to_thread.
-    2. aiohttp browser-simulation fallback — used only if nsepython fails or
-       is not installed. Implements full Akamai-aware warmup sequence.
+    2. curl_cffi Chrome impersonation — impersonates Chrome's TLS fingerprint
+       (JA3/JA4 hashes) so Akamai accepts it as a real browser session.
+       Install with: pip install curl_cffi
+    3. aiohttp browser-simulation fallback — last resort; Akamai usually blocks
+       this because it cannot execute JavaScript to validate the _abck cookie.
 
 NSE Akamai Anti-Bot Notes:
     NSE uses Akamai Bot Manager. The _abck cookie requires JavaScript execution
-    to validate — pure HTTP clients (aiohttp) receive a placeholder cookie that
-    causes NSE to return HTTP 200 with empty body. nsepython handles this via
-    a requests.Session that correctly negotiates NSE cookies.
+    to validate. Pure Python HTTP clients (requests, aiohttp) receive a
+    placeholder cookie that Akamai rejects, returning HTTP 200 with empty body.
+    curl_cffi bypasses this by impersonating Chrome's TLS/HTTP2 fingerprint.
+    nsepython wraps requests and has the same limitation.
 """
 
 import asyncio
 import random
+import time
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,6 +38,15 @@ try:
 except ImportError:  # pragma: no cover
     _NSEPYTHON_OK = False
     _nse_scrapper = None  # type: ignore[assignment]
+
+# ── curl_cffi availability check (Chrome TLS impersonation) ─────────────────
+# Install with: pip install curl_cffi
+try:
+    import curl_cffi.requests as _cffi_requests  # type: ignore[import]
+    _CURL_CFFI_OK = True
+except ImportError:
+    _CURL_CFFI_OK = False
+    _cffi_requests = None  # type: ignore[assignment]
 
 logger = get_logger(__name__)
 
@@ -348,6 +362,77 @@ class OptionChainFetcher:
             logger.warning(f"nsepython fetch failed for {symbol}: {exc}")
         return None
 
+    # ── curl_cffi Chrome-impersonation fetch ──────────────────────────────────
+
+    async def _fetch_via_curl_cffi(self, symbol: str) -> Optional[Dict]:
+        """
+        Fetch NSE option chain using curl_cffi which impersonates Chrome's TLS
+        fingerprint (JA3/JA4). Akamai accepts this as a genuine browser session
+        and returns valid data — no JavaScript execution required.
+
+        Install the dependency with: pip install curl_cffi
+
+        Returns the raw NSE dict (same schema as _parse_option_chain expects),
+        or None if curl_cffi is not installed or the call fails.
+        """
+        if not _CURL_CFFI_OK or _cffi_requests is None:
+            return None
+
+        if symbol in _WEEKLY_EXPIRY_INDICES:
+            api_url = NSE_OPTION_CHAIN_URL
+        else:
+            api_url = NSE_EQUITY_OPTION_URL
+
+        def _sync_fetch() -> Optional[Dict]:
+            session = _cffi_requests.Session(impersonate="chrome120")
+            headers = {
+                "Accept-Language": "en-US,en;q=0.9",
+                "DNT": "1",
+            }
+            # Step 1 — visit homepage so NSE sets session cookies
+            session.get(NSE_BASE_URL, headers=headers, timeout=20)
+            time.sleep(random.uniform(1.0, 2.0))
+            # Step 2 — visit the option chain page (sets referer cookie)
+            oc_page = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
+            session.get(oc_page, headers=headers, timeout=20)
+            time.sleep(random.uniform(0.8, 1.5))
+            # Step 3 — fetch the JSON API
+            api_headers = {
+                **headers,
+                "Accept": "application/json, text/plain, */*",
+                "Referer": oc_page,
+                "X-Requested-With": "XMLHttpRequest",
+            }
+            resp = session.get(
+                api_url,
+                params={"symbol": symbol},
+                headers=api_headers,
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+
+        try:
+            logger.info(
+                f"Fetching {symbol} option chain via curl_cffi "
+                f"(Chrome impersonation) …"
+            )
+            raw = await asyncio.to_thread(_sync_fetch)
+            if raw and isinstance(raw, dict) and raw.get("records"):
+                logger.info(
+                    f"curl_cffi fetch OK for {symbol} "
+                    f"({len(raw.get('records', {}).get('data', []))} records)"
+                )
+                return raw
+            logger.warning(
+                f"curl_cffi returned empty/invalid data for {symbol}: "
+                f"keys={list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__}"
+            )
+        except Exception as exc:
+            logger.warning(f"curl_cffi fetch failed for {symbol}: {exc}")
+        return None
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def fetch_option_chain(
@@ -370,15 +455,26 @@ class OptionChainFetcher:
         """
         symbol = symbol.upper()
 
-        # ── 1. Try nsepython first (best NSE compatibility) ───────────────────
+        # ── 1. Try nsepython first ────────────────────────────────────────────
         raw = await self._fetch_via_nsepython(symbol)
         if raw:
             return self._parse_option_chain(raw, symbol)
 
-        # ── 2. Fallback: aiohttp browser-simulation ───────────────────────────
+        # ── 2. curl_cffi Chrome impersonation (bypasses Akamai TLS checks) ────
+        if _CURL_CFFI_OK:
+            raw = await self._fetch_via_curl_cffi(symbol)
+            if raw:
+                return self._parse_option_chain(raw, symbol)
+        else:
+            logger.warning(
+                f"curl_cffi not installed — Akamai will likely block aiohttp too. "
+                f"Fix: pip install curl_cffi"
+            )
+
+        # ── 3. Fallback: aiohttp browser-simulation (often blocked by Akamai) ─
         logger.info(
-            f"nsepython unavailable/failed for {symbol} — "
-            f"falling back to aiohttp session"
+            f"curl_cffi/nsepython unavailable/failed for {symbol} — "
+            f"falling back to aiohttp session (may be blocked by Akamai)"
         )
 
         # Choose the correct endpoint
@@ -449,8 +545,8 @@ class OptionChainFetcher:
                         logger.warning(
                             f"NSE returned empty body for {symbol} "
                             f"(attempt {attempt + 1}) — "
-                            f"Akamai bot-detection likely triggered. "
-                            f"Install nsepython: pip install nsepython"
+                            f"Akamai bot-detection triggered. "
+                            f"Fix: pip install curl_cffi"
                         )
 
                     elif status in (401, 403):
@@ -517,7 +613,8 @@ class OptionChainFetcher:
 
         logger.error(
             f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
-            f"Ensure nsepython is installed: pip install nsepython"
+            f"Akamai is blocking pure-Python HTTP clients. "
+            f"Install curl_cffi for Chrome TLS impersonation: pip install curl_cffi"
         )
         return None
 
