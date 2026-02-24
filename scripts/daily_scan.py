@@ -425,6 +425,10 @@ async def run_daily_scan(
                         "sector": "Unknown",
                         "market_cap": 0,
                         "last_price": last_price,
+                        # "profit_growth_pct": <float>  ← populate from a
+                        # screener / fundamental data source to activate the
+                        # Financial Health Check in apply_pre_filters().
+                        # When absent the filter is skipped (safe default).
                     }
 
                     scan_stats["strategy_scanned"] += 1
@@ -603,8 +607,17 @@ async def run_daily_scan(
                         )
                         continue
 
+                    # ── Canonical prices: defined ONCE, passed to both text + chart ──
+                    entry_price = signal.entry_price
+                    target_price = signal.target_price
+                    stop_loss = signal.stop_loss
+
                     # Format alert - convert AggregatedSignal to dict
                     signal_dict = signal.to_dict()
+                    # Ensure text message always uses the canonical prices
+                    signal_dict["entry_price"] = entry_price
+                    signal_dict["target_price"] = target_price
+                    signal_dict["stop_loss"] = stop_loss
                     # Use RAW confidence from the best individual signal
                     raw_conf = 0.0
                     best_met = "N/A"
@@ -651,6 +664,10 @@ async def run_daily_scan(
                     if signal.symbol not in chart_paths and signal.symbol in symbol_dfs:
                         _df = symbol_dfs[signal.symbol]
                         _sig = symbol_sigs[signal.symbol]
+                        # Sync chart signal to canonical prices so both outputs match
+                        _sig.entry_price = entry_price
+                        _sig.target_price = target_price
+                        _sig.stop_loss = stop_loss
                         _tmp = os.path.join(
                             tempfile.gettempdir(),
                             f"chart_{signal.symbol}.png",
