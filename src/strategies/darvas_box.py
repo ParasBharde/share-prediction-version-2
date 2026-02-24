@@ -90,6 +90,7 @@ class DarvasBoxStrategy(BaseStrategy):
             "pre_filter_rejected": 0,
             "insufficient_data": 0,
             "trend_rejected": 0,
+            "overbought_rejected": 0,
             "no_pattern": 0,
             "volume_rejected": 0,
             "sl_too_wide": 0,
@@ -147,6 +148,17 @@ class DarvasBoxStrategy(BaseStrategy):
             logger.debug(
                 f"{symbol}: Trend rejected — close {last_close:.2f} "
                 f"< EMA{self.trend_ema_period} {last_ema:.2f}"
+            )
+            return None
+
+        # ── 1b. Overbought filter (RSI > 75 → Neutral) ───────────────────
+        from src.strategies.indicators.oscillators import rsi as calc_rsi
+        rsi_series = calc_rsi(df["close"], 14)
+        last_rsi = float(rsi_series.iloc[-1])
+        if not pd.isna(last_rsi) and last_rsi > 75:
+            self._scan_stats["overbought_rejected"] += 1
+            logger.debug(
+                f"{symbol}: Overbought — RSI {last_rsi:.1f} > 75, skipping"
             )
             return None
 
