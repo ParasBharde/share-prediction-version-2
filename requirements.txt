@@ -28,10 +28,10 @@ pandas-ta>=0.3.14b0
 yfinance>=0.2.30
 nsepython>=2.97
 
-# NSE Akamai bypass — impersonates Chrome TLS fingerprint so NSE accepts the
-# request as a real browser. Required for option chain fetching.
-# pip install curl_cffi
-curl_cffi>=0.7.0
+# NSE Akamai bypass — runs a real Chromium browser that executes JavaScript,
+# so Akamai's _abck cookie validation passes. Required for option chain fetching.
+# After installing: playwright install chromium
+playwright>=1.40.0
 
 # Telegram Bot
 python-telegram-bot>=20.0
