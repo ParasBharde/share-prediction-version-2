@@ -316,6 +316,10 @@ async def run_btst_scan(
                         "sector": "Unknown",
                         "market_cap": 0,
                         "last_price": last_price,
+                        # "profit_growth_pct": <float>  ← populate from a
+                        # screener / fundamental data source to activate the
+                        # Financial Health Check in apply_pre_filters().
+                        # When absent the filter is skipped (safe default).
                     }
 
                     scan_stats["strategy_scanned"] += 1
@@ -387,6 +391,7 @@ async def run_btst_scan(
                         f"  {s.name:<24} "
                         f"total={st.get('total', 0):>5}  "
                         f"trend_rejected={st.get('trend_rejected', 0):>5}  "
+                        f"overbought={st.get('overbought_rejected', 0):>5}  "
                         f"no_pattern={st.get('no_pattern', 0):>5}  "
                         f"vol_rejected={st.get('volume_rejected', 0):>5}  "
                         f"signals={st.get('signals', 0):>4}"
@@ -455,6 +460,11 @@ async def run_btst_scan(
                     )
                     continue
 
+                # ── Canonical prices: defined ONCE, passed to both text + chart ──
+                entry_price = signal.entry_price
+                target_price = signal.target_price
+                stop_loss = signal.stop_loss
+
                 signal_dict = signal.to_dict()
                 raw_conf = 0.0
                 best_met: Any = "N/A"
@@ -469,6 +479,10 @@ async def run_btst_scan(
                 signal_dict["indicators_met"] = best_met
                 signal_dict["total_indicators"] = best_total
                 signal_dict["individual_signals"] = signal.individual_signals
+                # Ensure text message always uses the canonical prices
+                signal_dict["entry_price"] = entry_price
+                signal_dict["target_price"] = target_price
+                signal_dict["stop_loss"] = stop_loss
 
                 message = alert_formatter.format_buy_signal(signal_dict)
 
@@ -476,6 +490,10 @@ async def run_btst_scan(
                 if signal.symbol not in chart_paths and signal.symbol in symbol_dfs:
                     _df = symbol_dfs[signal.symbol]
                     _sig = symbol_sigs[signal.symbol]
+                    # Sync chart signal to canonical prices so both outputs match
+                    _sig.entry_price = entry_price
+                    _sig.target_price = target_price
+                    _sig.stop_loss = stop_loss
                     _tmp = str(Path(chart_dir) / f"btst_{signal.symbol}.png")
                     _ok = await asyncio.to_thread(
                         visualizer.save_signal_chart, _df, _sig, _tmp

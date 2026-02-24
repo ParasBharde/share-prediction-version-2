@@ -190,6 +190,18 @@ class BaseStrategy(ABC):
             if filters.get("price_max") and price > filters["price_max"]:
                 return False
 
+        # Financial health: profit growth filter
+        # Requires company_info["profit_growth_pct"] to be populated by the
+        # caller (e.g. from a screener / fundamental data source).
+        # Skipped transparently when the field is absent (data unavailable).
+        profit_growth_pct = company_info.get("profit_growth_pct")
+        if profit_growth_pct is not None and profit_growth_pct < 0:
+            logger.debug(
+                f"Financial health rejected: "
+                f"profit_growth_pct={profit_growth_pct:.1f}% < 0"
+            )
+            return False
+
         return True
 
     def calculate_stop_loss(
