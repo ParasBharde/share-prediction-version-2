@@ -29,7 +29,7 @@ from src.monitoring.logger import get_logger
 from src.strategies.base_strategy import BaseStrategy, TradingSignal
 from src.strategies.indicators.moving_averages import ema
 from src.strategies.indicators.oscillators import rsi, supertrend
-from src.strategies.indicators.volume_indicators import vwap, volume_ratio
+from src.strategies.indicators.volume_indicators import session_vwap, volume_ratio
 from src.utils.constants import AlertPriority, SignalType
 
 logger = get_logger(__name__)
@@ -143,7 +143,7 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
 
         # ── 1. VWAP Direction (bias) ───────────────────────────────────────
         try:
-            vwap_series = vwap(
+            vwap_series = session_vwap(
                 df["high"], df["low"], df["close"], df["volume"]
             )
             current_vwap = float(vwap_series.iloc[-1])

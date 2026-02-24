@@ -305,6 +305,12 @@ class OptionChainFetcher:
             referer = f"{NSE_BASE_URL}/option-chain"
 
         params = {"symbol": symbol}
+        # Symbol-specific page URL — this is what a real browser visits before
+        # the API call. NSE's Akamai validates that this page was loaded first.
+        symbol_page_url = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
+        # The API referer must match the symbol-specific page, not the generic one
+        api_referer = symbol_page_url
+
         max_attempts = 5
         base_delay = 2.0   # seconds
 
@@ -316,8 +322,27 @@ class OptionChainFetcher:
                     f"Warmup failed on attempt {attempt + 1}/{max_attempts}"
                 )
 
+            # Visit the symbol-specific option chain page so NSE knows the user
+            # navigated here (Akamai validates the page-visit before API access).
             session = await self._get_session()
-            headers = _build_api_headers(self._user_agent, referer)
+            try:
+                async with session.get(
+                    symbol_page_url,
+                    headers=_build_headers(self._user_agent, referer=f"{NSE_BASE_URL}/"),
+                    allow_redirects=True,
+                ) as page_resp:
+                    await page_resp.read()
+                    logger.debug(
+                        f"NSE symbol page {symbol} → HTTP {page_resp.status}"
+                    )
+            except Exception as page_exc:
+                logger.debug(
+                    f"NSE symbol page visit failed for {symbol}: {page_exc}"
+                )
+            # Brief human-like pause after page load, before API call
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            headers = _build_api_headers(self._user_agent, api_referer)
 
             try:
                 async with session.get(
