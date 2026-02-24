@@ -31,6 +31,7 @@ from src.strategies.indicators.moving_averages import ema
 from src.strategies.indicators.oscillators import rsi, supertrend
 from src.strategies.indicators.volume_indicators import session_vwap, volume_ratio
 from src.utils.constants import AlertPriority, SignalType
+from src.strategies.options_oi_breakout import _LOT_SIZE
 
 logger = get_logger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -302,7 +303,6 @@ class OptionsVWAPSupertrendStrategy(BaseStrategy):
             trade_signal = SignalType.SELL
 
         # Round ATM strike to index lot size
-        from src.strategies.options_oi_breakout import _LOT_SIZE
         step = _LOT_SIZE.get(symbol.upper(), 50)
         atm_strike = round(entry_price / step) * step
 

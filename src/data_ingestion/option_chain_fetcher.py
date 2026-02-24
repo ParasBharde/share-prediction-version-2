@@ -298,15 +298,52 @@ class OptionChainFetcher:
             logger.info(f"Fetching {symbol} option chain via nsepython …")
             # Run synchronous nsepython in a thread so we don't block the event loop
             raw = await asyncio.to_thread(_nse_scrapper, symbol)
+
             if raw and isinstance(raw, dict) and raw.get("records"):
                 logger.info(
                     f"nsepython fetch OK for {symbol} "
                     f"({len(raw.get('records', {}).get('data', []))} records)"
                 )
                 return raw
-            logger.warning(
-                f"nsepython returned empty/invalid data for {symbol}: {type(raw)}"
-            )
+
+            # ── Detailed diagnostics so we can see EXACTLY what came back ─────
+            if isinstance(raw, dict):
+                top_keys = list(raw.keys())
+                preview   = str(raw)[:400]
+                logger.warning(
+                    f"nsepython returned a dict WITHOUT 'records' for {symbol}. "
+                    f"Top-level keys: {top_keys}. "
+                    f"Content preview: {preview!r}"
+                )
+                # ── Alternate structure: some NSE API versions nest differently ─
+                # If 'filtered' exists but 'records' is missing, try wrapping it
+                if raw.get("filtered") and not raw.get("records"):
+                    logger.info(
+                        f"Attempting to reconstruct 'records' from 'filtered' "
+                        f"for {symbol} …"
+                    )
+                    # Build a minimal records block from filtered so _parse_option_chain
+                    # can still run — underlying price may be 0 but OI data will work
+                    synthetic = {
+                        "records": {
+                            "data":           raw["filtered"].get("data", []),
+                            "expiryDates":    raw.get("expiryDates", []),
+                            "underlyingValue": raw.get("underlyingValue", 0.0),
+                        },
+                        "filtered": raw["filtered"],
+                    }
+                    if synthetic["records"]["data"]:
+                        logger.info(
+                            f"Reconstructed option chain for {symbol} from "
+                            f"'filtered' data "
+                            f"({len(synthetic['records']['data'])} rows)"
+                        )
+                        return synthetic
+            else:
+                logger.warning(
+                    f"nsepython returned non-dict for {symbol}: "
+                    f"type={type(raw).__name__}, value={str(raw)[:200]!r}"
+                )
         except Exception as exc:
             logger.warning(f"nsepython fetch failed for {symbol}: {exc}")
         return None

@@ -28,6 +28,7 @@ from src.strategies.indicators.moving_averages import ema
 from src.strategies.indicators.oscillators import rsi
 from src.strategies.indicators.volume_indicators import volume_ratio, vwap
 from src.utils.constants import AlertPriority, SignalType
+from src.strategies.options_oi_breakout import _LOT_SIZE
 
 logger = get_logger(__name__)
 
@@ -268,7 +269,6 @@ class OptionsPCRStrategy(BaseStrategy):
         # Use ATM strike from option chain data if available
         # (more accurate than rounding spot price to lot-size step)
         if not atm_strike:
-            from src.strategies.options_oi_breakout import _LOT_SIZE
             step = _LOT_SIZE.get(symbol.upper(), 50)
             atm_strike = round(entry_price / step) * step
 
