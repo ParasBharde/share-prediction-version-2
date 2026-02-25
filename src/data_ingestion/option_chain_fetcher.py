@@ -576,8 +576,10 @@ class OptionChainFetcher:
         Fetch full option chain data for a symbol.
 
         Fetch order:
-          1. nsepython.nse_optionchain_scrapper() — handles Akamai cookies natively
-          2. aiohttp browser-simulation fallback (5 attempts with backoff)
+          1. nsepython.nse_optionchain_scrapper()
+          2. Playwright real browser (if installed)
+          3. curl_cffi TLS impersonation (if installed)
+          4. aiohttp browser-simulation fallback (5 attempts with backoff)
 
         Args:
             symbol: Index name (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
@@ -610,9 +612,9 @@ class OptionChainFetcher:
             if raw:
                 return self._parse_option_chain(raw, symbol)
         else:
-            logger.warning(
+            logger.info(
                 "curl_cffi not installed — skipping TLS impersonation fallback. "
-                "Fix: pip install curl_cffi"
+                "Install with: pip install curl_cffi"
             )
 
         # ── 4. Fallback: aiohttp browser-simulation (likely blocked) ──────────
@@ -755,11 +757,18 @@ class OptionChainFetcher:
                 )
                 await asyncio.sleep(delay)
 
-        logger.error(
-            f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
-            f"Akamai is blocking pure-Python HTTP clients. "
-            f"Install curl_cffi for Chrome TLS impersonation: pip install curl_cffi"
-        )
+        if _CURL_CFFI_OK:
+            logger.error(
+                f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
+                f"Akamai is still blocking this environment even after "
+                f"nsepython/playwright/curl_cffi fallbacks."
+            )
+        else:
+            logger.error(
+                f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
+                f"Akamai is blocking pure-Python HTTP clients. "
+                f"Install curl_cffi for Chrome TLS impersonation: pip install curl_cffi"
+            )
         return None
 
     async def _fetch_via_curl_cffi(self, symbol: str) -> Optional[Dict]:
@@ -768,69 +777,74 @@ class OptionChainFetcher:
             return None
 
         def _sync_fetch() -> Optional[Dict]:
-            # Keep this in sync with NSE's current browser profile.
-            impersonate = "chrome124"
-
             if symbol in _WEEKLY_EXPIRY_INDICES:
                 api_url = NSE_OPTION_CHAIN_URL
             else:
                 api_url = NSE_EQUITY_OPTION_URL
 
             symbol_page_url = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
+            impersonations = ("chrome124", "chrome123")
 
-            try:
-                with _curl_requests.Session(impersonate=impersonate) as session:
-                    session.headers.update(
-                        {
-                            "User-Agent": self._user_agent,
-                            "Accept-Language": "en-US,en;q=0.9",
-                            "DNT": "1",
-                        }
-                    )
-
-                    # Warm the cookie jar similarly to browser navigation.
-                    session.get(NSE_BASE_URL, timeout=20)
-                    session.get(f"{NSE_BASE_URL}/option-chain", timeout=20)
-                    session.get(symbol_page_url, timeout=20)
-
-                    resp = session.get(
-                        api_url,
-                        params={"symbol": symbol},
-                        headers={
-                            "Accept": "application/json, text/plain, */*",
-                            "Referer": symbol_page_url,
-                            "X-Requested-With": "XMLHttpRequest",
-                        },
-                        timeout=20,
-                    )
-                    if resp.status_code != 200:
-                        logger.warning(
-                            f"curl_cffi fetch HTTP {resp.status_code} for {symbol}"
+            for impersonate in impersonations:
+                try:
+                    with _curl_requests.Session(impersonate=impersonate) as session:
+                        session.headers.update(
+                            {
+                                # Let curl_cffi manage browser UA for the selected
+                                # impersonation profile; only set ancillary headers.
+                                "Accept-Language": "en-US,en;q=0.9",
+                                "DNT": "1",
+                            }
                         )
-                        return None
 
-                    try:
-                        payload = resp.json()
-                    except Exception as exc:
-                        logger.warning(
-                            f"curl_cffi JSON parse failed for {symbol}: {exc}"
+                        # Warm the cookie jar similarly to browser navigation.
+                        session.get(NSE_BASE_URL, timeout=20)
+                        session.get(f"{NSE_BASE_URL}/option-chain", timeout=20)
+                        session.get(symbol_page_url, timeout=20)
+
+                        resp = session.get(
+                            api_url,
+                            params={"symbol": symbol},
+                            headers={
+                                "Accept": "application/json, text/plain, */*",
+                                "Referer": symbol_page_url,
+                                "X-Requested-With": "XMLHttpRequest",
+                            },
+                            timeout=20,
                         )
-                        return None
+                        if resp.status_code != 200:
+                            logger.debug(
+                                f"curl_cffi({impersonate}) HTTP {resp.status_code} for {symbol}"
+                            )
+                            continue
 
-                    if isinstance(payload, dict) and payload.get("records"):
-                        return payload
+                        try:
+                            payload = resp.json()
+                        except Exception as exc:
+                            logger.debug(
+                                f"curl_cffi({impersonate}) JSON parse failed for {symbol}: {exc}"
+                            )
+                            continue
 
-                    keys = (
-                        list(payload.keys())
-                        if isinstance(payload, dict)
-                        else type(payload).__name__
-                    )
-                    logger.warning(
-                        f"curl_cffi fetch yielded no valid data for {symbol}. keys={keys}"
-                    )
-            except Exception as exc:
-                logger.warning(f"curl_cffi fetch failed for {symbol}: {exc}")
+                        if isinstance(payload, dict) and payload.get("records"):
+                            logger.info(
+                                f"curl_cffi({impersonate}) fetch OK for {symbol} "
+                                f"({len(payload.get('records', {}).get('data', []))} records)"
+                            )
+                            return payload
 
+                        keys = (
+                            list(payload.keys())
+                            if isinstance(payload, dict)
+                            else type(payload).__name__
+                        )
+                        logger.debug(
+                            f"curl_cffi({impersonate}) yielded no valid data for {symbol}. keys={keys}"
+                        )
+                except Exception as exc:
+                    logger.debug(f"curl_cffi({impersonate}) failed for {symbol}: {exc}")
+
+            logger.warning(f"curl_cffi fetch yielded no valid data for {symbol}")
             return None
 
         logger.info(f"Fetching {symbol} option chain via curl_cffi …")
