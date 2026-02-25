@@ -26,6 +26,7 @@ NSE Akamai Anti-Bot Notes:
 """
 
 import asyncio
+import json
 import random
 import shutil
 import tempfile
@@ -210,6 +211,7 @@ class OptionChainFetcher:
         self._pw_browser = None
         self._pw_context = None
         self._pw_user_data_dir = tempfile.mkdtemp(prefix="nse-pw-")
+        self._cache_dir = tempfile.gettempdir()
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -387,6 +389,53 @@ class OptionChainFetcher:
             logger.warning(f"nsepython fetch failed for {symbol}: {exc}")
         return None
 
+    def _cache_file_path(self, symbol: str) -> str:
+        """Return local cache file path for parsed option-chain payload."""
+        safe_symbol = symbol.upper().strip().replace(" ", "_")
+        return f"{self._cache_dir}/option_chain_cache_{safe_symbol}.json"
+
+    def _save_parsed_cache(self, symbol: str, parsed: Dict[str, Any]) -> None:
+        """Persist parsed option-chain payload for blocked-network fallback."""
+        try:
+            payload = {
+                "cached_at": datetime.now().isoformat(),
+                "symbol": symbol.upper(),
+                "data": parsed,
+            }
+            with open(self._cache_file_path(symbol), "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+        except Exception as exc:
+            logger.debug(f"Failed to save option-chain cache for {symbol}: {exc}")
+
+    def _load_recent_cached_parsed(
+        self,
+        symbol: str,
+        max_age_minutes: int = 180,
+    ) -> Optional[Dict[str, Any]]:
+        """Load recent cached parsed option-chain payload, if available."""
+        try:
+            with open(self._cache_file_path(symbol), "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            cached_at_raw = payload.get("cached_at", "")
+            cached_at = datetime.fromisoformat(cached_at_raw)
+            age_seconds = (datetime.now() - cached_at).total_seconds()
+            if age_seconds > max_age_minutes * 60:
+                return None
+
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                return None
+            data = dict(data)
+            data["is_stale"] = True
+            data["stale_age_seconds"] = int(max(age_seconds, 0))
+            logger.warning(
+                f"Using cached option-chain data for {symbol} "
+                f"(age={int(age_seconds)}s) because live fetch is blocked"
+            )
+            return data
+        except Exception:
+            return None
+
     # ── Playwright real-browser fetch ─────────────────────────────────────────
 
     def _playwright_headless_mode(self) -> bool:
@@ -550,107 +599,114 @@ class OptionChainFetcher:
             page.on("response", _capture_response)
 
             try:
-                # Warm cookies on pages where Akamai JS executes.
-                try:
-                    await page.goto(
-                        NSE_BASE_URL,
-                        wait_until="domcontentloaded",
-                        timeout=25_000,
-                    )
-                    await asyncio.sleep(2)
-                except Exception as hp_exc:
-                    logger.debug(f"Playwright homepage navigation failed: {hp_exc}")
+                for pw_attempt in range(1, 4):
+                    warm_sleep = 1.5 + pw_attempt
+                    # Warm cookies on pages where Akamai JS executes.
+                    try:
+                        await page.goto(
+                            NSE_BASE_URL,
+                            wait_until="networkidle",
+                            timeout=35_000,
+                        )
+                        await asyncio.sleep(warm_sleep)
+                    except Exception as hp_exc:
+                        logger.debug(f"Playwright homepage navigation failed: {hp_exc}")
 
-                try:
-                    await page.goto(
-                        symbol_page_url,
-                        wait_until="domcontentloaded",
-                        timeout=25_000,
-                    )
-                    await asyncio.sleep(2)
-                except Exception as sym_exc:
-                    logger.debug(f"Playwright symbol page navigation failed: {sym_exc}")
+                    try:
+                        await page.goto(
+                            symbol_page_url,
+                            wait_until="networkidle",
+                            timeout=35_000,
+                        )
+                        await asyncio.sleep(warm_sleep)
+                    except Exception as sym_exc:
+                        logger.debug(f"Playwright symbol page navigation failed: {sym_exc}")
 
-                # Attempt 1: context.request.get using browser context cookies.
-                try:
-                    req_resp = await context.request.get(
-                        api_url,
-                        headers={
-                            "Accept": "application/json, text/plain, */*",
-                            "Referer": symbol_page_url,
-                            "X-Requested-With": "XMLHttpRequest",
-                        },
-                        timeout=20_000,
-                    )
-                    if req_resp.ok:
-                        raw = await req_resp.json()
+                    # Attempt 1: context.request.get using browser context cookies.
+                    try:
+                        req_resp = await context.request.get(
+                            api_url,
+                            headers={
+                                "Accept": "application/json, text/plain, */*",
+                                "Referer": symbol_page_url,
+                                "X-Requested-With": "XMLHttpRequest",
+                            },
+                            timeout=20_000,
+                        )
+                        if req_resp.ok:
+                            raw = await req_resp.json()
+                            if isinstance(raw, dict) and raw.get("records"):
+                                logger.info(
+                                    f"Playwright request-context fetch OK for {symbol} "
+                                    f"({len(raw.get('records', {}).get('data', []))} records)"
+                                )
+                                return raw
+                    except Exception as req_exc:
+                        logger.debug(f"Playwright request-context fetch failed: {req_exc}")
+
+                    # Attempt 2: wait for browser-driven API response while on option-chain page.
+                    try:
+                        resp = await page.wait_for_response(
+                            lambda r: api_path in r.url and r.status == 200,
+                            timeout=10_000,
+                        )
+                        raw = await resp.json()
                         if isinstance(raw, dict) and raw.get("records"):
                             logger.info(
-                                f"Playwright request-context fetch OK for {symbol} "
+                                f"Playwright wait_for_response fetch OK for {symbol} "
                                 f"({len(raw.get('records', {}).get('data', []))} records)"
                             )
                             return raw
-                except Exception as req_exc:
-                    logger.debug(f"Playwright request-context fetch failed: {req_exc}")
+                    except Exception as wait_exc:
+                        logger.debug(f"Playwright wait_for_response miss: {wait_exc}")
 
-                # Attempt 2: wait for browser-driven API response while on option-chain page.
-                try:
-                    resp = await page.wait_for_response(
-                        lambda r: api_path in r.url and r.status == 200,
-                        timeout=8_000,
-                    )
-                    raw = await resp.json()
-                    if isinstance(raw, dict) and raw.get("records"):
-                        logger.info(
-                            f"Playwright wait_for_response fetch OK for {symbol} "
-                            f"({len(raw.get('records', {}).get('data', []))} records)"
-                        )
-                        return raw
-                except Exception as wait_exc:
-                    logger.debug(f"Playwright wait_for_response miss: {wait_exc}")
-
-                # Attempt 3: in-page fetch.
-                try:
-                    raw = await page.evaluate(
-                        f"""async () => {{
-                            try {{
-                                const r = await fetch(
-                                    '{api_path}?symbol={symbol}',
-                                    {{
-                                        credentials: 'include',
-                                        headers: {{
-                                            'Accept': 'application/json, text/plain, */*',
-                                            'Referer': '{symbol_page_url}',
-                                            'X-Requested-With': 'XMLHttpRequest'
+                    # Attempt 3: in-page fetch.
+                    try:
+                        raw = await page.evaluate(
+                            f"""async () => {{
+                                try {{
+                                    const r = await fetch(
+                                        '{api_path}?symbol={symbol}',
+                                        {{
+                                            credentials: 'include',
+                                            headers: {{
+                                                'Accept': 'application/json, text/plain, */*',
+                                                'Referer': '{symbol_page_url}',
+                                                'X-Requested-With': 'XMLHttpRequest'
+                                            }}
                                         }}
-                                    }}
-                                );
-                                if (!r.ok) return null;
-                                return await r.json();
-                            }} catch(e) {{ return null; }}
-                        }}"""
-                    )
-                    if isinstance(raw, dict) and raw.get("records"):
-                        logger.info(
-                            f"Playwright page-fetch OK for {symbol} "
-                            f"({len(raw.get('records', {}).get('data', []))} records)"
+                                    );
+                                    if (!r.ok) return null;
+                                    return await r.json();
+                                }} catch(e) {{ return null; }}
+                            }}"""
                         )
-                        return raw
-                except Exception as eval_exc:
-                    logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
+                        if isinstance(raw, dict) and raw.get("records"):
+                            logger.info(
+                                f"Playwright page-fetch OK for {symbol} "
+                                f"({len(raw.get('records', {}).get('data', []))} records)"
+                            )
+                            return raw
+                    except Exception as eval_exc:
+                        logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
 
-                # Attempt 4: network-captured payload.
-                if captured_payload and captured_payload.get("records"):
-                    logger.info(
-                        f"Playwright network-capture fetch OK for {symbol} "
-                        f"({len(captured_payload.get('records', {}).get('data', []))} records)"
+                    # Attempt 4: network-captured payload.
+                    if captured_payload and captured_payload.get("records"):
+                        logger.info(
+                            f"Playwright network-capture fetch OK for {symbol} "
+                            f"({len(captured_payload.get('records', {}).get('data', []))} records)"
+                        )
+                        return captured_payload
+
+                    logger.debug(
+                        f"Playwright attempt {pw_attempt}/3 yielded empty data for {symbol}"
                     )
-                    return captured_payload
 
                 logger.warning(
                     f"Playwright fetch yielded no valid data for {symbol}. "
                     f"request/page/network capture all empty"
                 )
+
             finally:
                 await page.close()
 
@@ -693,13 +749,17 @@ class OptionChainFetcher:
         # ── 1. Try nsepython first ────────────────────────────────────────────
         raw = await self._fetch_via_nsepython(symbol)
         if raw:
-            return self._parse_option_chain(raw, symbol)
+            parsed = self._parse_option_chain(raw, symbol)
+            self._save_parsed_cache(symbol, parsed)
+            return parsed
 
         # ── 2. Playwright real browser (executes JS — fully bypasses Akamai) ───
         if _PLAYWRIGHT_OK:
             raw = await self._fetch_via_playwright(symbol)
             if raw:
-                return self._parse_option_chain(raw, symbol)
+                parsed = self._parse_option_chain(raw, symbol)
+                self._save_parsed_cache(symbol, parsed)
+                return parsed
         else:
             logger.warning(
                 "playwright not installed — Akamai will block all pure-Python "
@@ -710,7 +770,9 @@ class OptionChainFetcher:
         if _CURL_CFFI_OK:
             raw = await self._fetch_via_curl_cffi(symbol)
             if raw:
-                return self._parse_option_chain(raw, symbol)
+                parsed = self._parse_option_chain(raw, symbol)
+                self._save_parsed_cache(symbol, parsed)
+                return parsed
         else:
             logger.info(
                 "curl_cffi not installed — skipping TLS impersonation fallback. "
@@ -745,7 +807,16 @@ class OptionChainFetcher:
                 )
 
             # Visit the symbol-specific option chain page before the API call
-            session = await self._get_session()
+            try:
+                session = await self._get_session()
+            except Exception as sess_exc:
+                logger.warning(f"Failed to get NSE session for {symbol}: {sess_exc}")
+                if attempt < max_attempts - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    delay = min(delay, 30)
+                    await asyncio.sleep(delay)
+                continue
+
             try:
                 async with session.get(
                     symbol_page_url,
@@ -787,7 +858,9 @@ class OptionChainFetcher:
 
                         if data:
                             self._auth_failures = 0
-                            return self._parse_option_chain(data, symbol)
+                            parsed = self._parse_option_chain(data, symbol)
+                            self._save_parsed_cache(symbol, parsed)
+                            return parsed
                         logger.warning(
                             f"NSE returned empty body for {symbol} "
                             f"(attempt {attempt + 1}) — "
@@ -868,6 +941,10 @@ class OptionChainFetcher:
                 f"Akamai is blocking pure-Python HTTP clients. "
                 f"Install curl_cffi for Chrome TLS impersonation: pip install curl_cffi"
             )
+
+        cached = self._load_recent_cached_parsed(symbol)
+        if cached:
+            return cached
         return None
 
     async def _fetch_via_curl_cffi(self, symbol: str) -> Optional[Dict]:

@@ -82,3 +82,38 @@ def test_playwright_headless_mode_env_override():
 
     with patch.dict("os.environ", {"NSE_PLAYWRIGHT_HEADLESS": "0"}, clear=False):
         assert fetcher._playwright_headless_mode() is False
+
+
+def test_fetch_option_chain_uses_recent_cache_when_all_live_paths_fail(tmp_path):
+    """When all live paths fail, recent cached parsed data should be returned."""
+    fetcher = OptionChainFetcher()
+    fetcher._cache_dir = str(tmp_path)
+
+    cached_payload = {
+        "symbol": "NIFTY",
+        "underlying_price": 22444.0,
+        "pcr": 1.01,
+        "strikes": [],
+    }
+    fetcher._save_parsed_cache("NIFTY", cached_payload)
+
+    async def _run():
+        with patch.object(option_chain_module, "_PLAYWRIGHT_OK", True), patch.object(option_chain_module, "_CURL_CFFI_OK", True), patch.object(
+            fetcher, "_fetch_via_nsepython", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_playwright", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_curl_cffi", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_ensure_warmed_up", AsyncMock(return_value=False)
+        ), patch.object(
+            fetcher, "_get_session", AsyncMock(side_effect=RuntimeError("blocked"))
+        ):
+            result = await fetcher.fetch_option_chain("NIFTY")
+
+        assert result is not None
+        assert result["symbol"] == "NIFTY"
+        assert result["underlying_price"] == 22444.0
+        assert result.get("is_stale") is True
+
+    asyncio.run(_run())
