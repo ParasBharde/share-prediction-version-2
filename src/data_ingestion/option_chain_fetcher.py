@@ -11,15 +11,18 @@ Fetch strategy (in priority order):
        _abck cookie validation passes. The only reliable way to get live NSE
        data without an official API key.
        Install with: pip install playwright && playwright install chromium
-    3. aiohttp browser-simulation fallback — last resort; always blocked by
-       Akamai because it cannot execute JavaScript to validate _abck.
+    3. curl_cffi browser-impersonation fallback — can bypass some Akamai
+       fingerprints by using Chrome-like TLS/JA3 signatures.
+    4. aiohttp browser-simulation fallback — last resort when all other
+       methods fail.
 
 NSE Akamai Anti-Bot Notes:
     NSE uses Akamai Bot Manager. The _abck cookie requires JavaScript execution
-    to validate. Pure Python HTTP clients (requests, aiohttp, nsepython,
-    curl_cffi) all receive a placeholder _abck cookie. NSE's server silently
+    to validate. Most pure Python HTTP clients (requests, aiohttp, nsepython)
+    receive a placeholder _abck cookie. NSE's server silently
     returns HTTP 200 with body {} for any request whose _abck is invalid.
     Playwright runs real Chrome JS which generates a valid _abck cookie.
+    curl_cffi may still succeed in some environments due to TLS impersonation.
 """
 
 import asyncio
@@ -48,6 +51,14 @@ try:
 except ImportError:
     _PLAYWRIGHT_OK = False
     _async_playwright = None  # type: ignore[assignment]
+
+# ── curl_cffi availability check (TLS browser impersonation fallback) ──────
+try:
+    from curl_cffi import requests as _curl_requests
+    _CURL_CFFI_OK = True
+except ImportError:
+    _CURL_CFFI_OK = False
+    _curl_requests = None  # type: ignore[assignment]
 
 logger = get_logger(__name__)
 
@@ -565,8 +576,10 @@ class OptionChainFetcher:
         Fetch full option chain data for a symbol.
 
         Fetch order:
-          1. nsepython.nse_optionchain_scrapper() — handles Akamai cookies natively
-          2. aiohttp browser-simulation fallback (5 attempts with backoff)
+          1. nsepython.nse_optionchain_scrapper()
+          2. Playwright real browser (if installed)
+          3. curl_cffi TLS impersonation (if installed)
+          4. aiohttp browser-simulation fallback (5 attempts with backoff)
 
         Args:
             symbol: Index name (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
@@ -593,9 +606,20 @@ class OptionChainFetcher:
                 "HTTP clients. Fix: pip install playwright && playwright install chromium"
             )
 
-        # ── 3. Fallback: aiohttp browser-simulation (blocked by Akamai) ───────
+        # ── 3. Try curl_cffi browser impersonation before raw aiohttp ────────
+        if _CURL_CFFI_OK:
+            raw = await self._fetch_via_curl_cffi(symbol)
+            if raw:
+                return self._parse_option_chain(raw, symbol)
+        else:
+            logger.info(
+                "curl_cffi not installed — skipping TLS impersonation fallback. "
+                "Install with: pip install curl_cffi"
+            )
+
+        # ── 4. Fallback: aiohttp browser-simulation (likely blocked) ──────────
         logger.info(
-            f"nsepython/playwright failed for {symbol} — "
+            f"nsepython/playwright/curl_cffi failed for {symbol} — "
             f"falling back to aiohttp (likely blocked by Akamai)"
         )
 
@@ -733,12 +757,98 @@ class OptionChainFetcher:
                 )
                 await asyncio.sleep(delay)
 
-        logger.error(
-            f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
-            f"Akamai is blocking pure-Python HTTP clients. "
-            f"Install curl_cffi for Chrome TLS impersonation: pip install curl_cffi"
-        )
+        if _CURL_CFFI_OK:
+            logger.error(
+                f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
+                f"Akamai is still blocking this environment even after "
+                f"nsepython/playwright/curl_cffi fallbacks."
+            )
+        else:
+            logger.error(
+                f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
+                f"Akamai is blocking pure-Python HTTP clients. "
+                f"Install curl_cffi for Chrome TLS impersonation: pip install curl_cffi"
+            )
         return None
+
+    async def _fetch_via_curl_cffi(self, symbol: str) -> Optional[Dict]:
+        """Fetch raw option-chain JSON using curl_cffi TLS impersonation."""
+        if not _CURL_CFFI_OK or _curl_requests is None:
+            return None
+
+        def _sync_fetch() -> Optional[Dict]:
+            if symbol in _WEEKLY_EXPIRY_INDICES:
+                api_url = NSE_OPTION_CHAIN_URL
+            else:
+                api_url = NSE_EQUITY_OPTION_URL
+
+            symbol_page_url = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
+            impersonations = ("chrome124", "chrome123")
+
+            for impersonate in impersonations:
+                try:
+                    with _curl_requests.Session(impersonate=impersonate) as session:
+                        session.headers.update(
+                            {
+                                # Let curl_cffi manage browser UA for the selected
+                                # impersonation profile; only set ancillary headers.
+                                "Accept-Language": "en-US,en;q=0.9",
+                                "DNT": "1",
+                            }
+                        )
+
+                        # Warm the cookie jar similarly to browser navigation.
+                        session.get(NSE_BASE_URL, timeout=20)
+                        session.get(f"{NSE_BASE_URL}/option-chain", timeout=20)
+                        session.get(symbol_page_url, timeout=20)
+
+                        resp = session.get(
+                            api_url,
+                            params={"symbol": symbol},
+                            headers={
+                                "Accept": "application/json, text/plain, */*",
+                                "Referer": symbol_page_url,
+                                "X-Requested-With": "XMLHttpRequest",
+                            },
+                            timeout=20,
+                        )
+                        if resp.status_code != 200:
+                            logger.debug(
+                                f"curl_cffi({impersonate}) HTTP {resp.status_code} for {symbol}"
+                            )
+                            continue
+
+                        try:
+                            payload = resp.json()
+                        except Exception as exc:
+                            logger.debug(
+                                f"curl_cffi({impersonate}) JSON parse failed for {symbol}: {exc}"
+                            )
+                            continue
+
+                        if isinstance(payload, dict) and payload.get("records"):
+                            logger.info(
+                                f"curl_cffi({impersonate}) fetch OK for {symbol} "
+                                f"({len(payload.get('records', {}).get('data', []))} records)"
+                            )
+                            return payload
+
+                        keys = (
+                            list(payload.keys())
+                            if isinstance(payload, dict)
+                            else type(payload).__name__
+                        )
+                        logger.debug(
+                            f"curl_cffi({impersonate}) yielded no valid data for {symbol}. keys={keys}"
+                        )
+                except Exception as exc:
+                    logger.debug(f"curl_cffi({impersonate}) failed for {symbol}: {exc}")
+
+            logger.warning(f"curl_cffi fetch yielded no valid data for {symbol}")
+            return None
+
+        logger.info(f"Fetching {symbol} option chain via curl_cffi …")
+        return await asyncio.to_thread(_sync_fetch)
 
     # ── Parsing ───────────────────────────────────────────────────────────────
 
