@@ -27,6 +27,8 @@ NSE Akamai Anti-Bot Notes:
 
 import asyncio
 import random
+import shutil
+import tempfile
 import time
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
@@ -207,6 +209,7 @@ class OptionChainFetcher:
         self._pw_playwright = None
         self._pw_browser = None
         self._pw_context = None
+        self._pw_user_data_dir = tempfile.mkdtemp(prefix="nse-pw-")
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -301,6 +304,12 @@ class OptionChainFetcher:
         if self._session and not self._session.closed:
             await self._session.close()
             await asyncio.sleep(0.25)
+        if self._pw_user_data_dir:
+            try:
+                shutil.rmtree(self._pw_user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._pw_user_data_dir = ""
         self._session = None
         self._last_warmup = None
         self._auth_failures = 0
@@ -380,6 +389,19 @@ class OptionChainFetcher:
 
     # ── Playwright real-browser fetch ─────────────────────────────────────────
 
+    def _playwright_headless_mode(self) -> bool:
+        """Determine Playwright headless mode from env with sensible defaults."""
+        import sys
+        env = (
+            __import__("os").environ.get("NSE_PLAYWRIGHT_HEADLESS", "").strip().lower()
+        )
+        if env in {"1", "true", "yes", "y", "on"}:
+            return True
+        if env in {"0", "false", "no", "n", "off"}:
+            return False
+        # On Windows, headed mode is often more reliable against bot-detection.
+        return sys.platform != "win32"
+
     async def _ensure_playwright(self) -> None:
         """
         Launch the Playwright Chromium browser if not already running.
@@ -445,13 +467,28 @@ class OptionChainFetcher:
                 (p for p in candidates if os.path.exists(p)), None
             )
 
-        self._pw_browser = await self._pw_playwright.chromium.launch(
-            headless=True,
+        headless_mode = self._playwright_headless_mode()
+        self._pw_context = await self._pw_playwright.chromium.launch_persistent_context(
+            user_data_dir=self._pw_user_data_dir,
+            headless=headless_mode,
             executable_path=system_chrome,
             args=launch_args,
+            viewport={"width": 1280, "height": 800},
+            ignore_https_errors=True,
         )
+        self._pw_browser = self._pw_context.browser
+        await self._pw_context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [{name: 'Chrome PDF Plugin'}]
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-IN', 'en-US', 'en']
+            });
+        """)
         label = f"system Chrome ({system_chrome})" if system_chrome else "Playwright Chromium"
-        logger.info(f"Playwright browser launched: {label}")
+        logger.info(f"Playwright browser launched: {label}, headless={headless_mode}")
 
     async def _fetch_via_playwright(self, symbol: str) -> Optional[Dict]:
         """
@@ -486,28 +523,12 @@ class OptionChainFetcher:
                 f"Fetching {symbol} option chain via Playwright (real browser) …"
             )
 
-            if self._pw_context is None:
-                self._pw_context = await self._pw_browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 800},
-                    ignore_https_errors=True,
-                )
-                await self._pw_context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [{name: 'Chrome PDF Plugin'}]
-                    });
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-IN', 'en-US', 'en']
-                    });
-                """)
-
             context = self._pw_context
+            if context is None:
+                logger.warning("Playwright context unavailable after init")
+                return None
+
+
             page = await context.new_page()
             captured_payload: Optional[Dict] = None
 
@@ -572,7 +593,23 @@ class OptionChainFetcher:
                 except Exception as req_exc:
                     logger.debug(f"Playwright request-context fetch failed: {req_exc}")
 
-                # Attempt 2: in-page fetch.
+                # Attempt 2: wait for browser-driven API response while on option-chain page.
+                try:
+                    resp = await page.wait_for_response(
+                        lambda r: api_path in r.url and r.status == 200,
+                        timeout=8_000,
+                    )
+                    raw = await resp.json()
+                    if isinstance(raw, dict) and raw.get("records"):
+                        logger.info(
+                            f"Playwright wait_for_response fetch OK for {symbol} "
+                            f"({len(raw.get('records', {}).get('data', []))} records)"
+                        )
+                        return raw
+                except Exception as wait_exc:
+                    logger.debug(f"Playwright wait_for_response miss: {wait_exc}")
+
+                # Attempt 3: in-page fetch.
                 try:
                     raw = await page.evaluate(
                         f"""async () => {{
@@ -602,7 +639,7 @@ class OptionChainFetcher:
                 except Exception as eval_exc:
                     logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
 
-                # Attempt 3: network-captured payload.
+                # Attempt 4: network-captured payload.
                 if captured_payload and captured_payload.get("records"):
                     logger.info(
                         f"Playwright network-capture fetch OK for {symbol} "
@@ -1077,6 +1114,12 @@ class OptionChainFetcher:
         if self._session and not self._session.closed:
             await self._session.close()
             await asyncio.sleep(0.25)
+        if self._pw_user_data_dir:
+            try:
+                shutil.rmtree(self._pw_user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._pw_user_data_dir = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

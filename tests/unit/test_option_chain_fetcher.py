@@ -71,3 +71,14 @@ def test_close_closes_playwright_context_before_browser():
     browser.close.assert_awaited_once()
     assert fetcher._pw_context is None
     assert fetcher._pw_browser is None
+
+
+def test_playwright_headless_mode_env_override():
+    """NSE_PLAYWRIGHT_HEADLESS env must explicitly control mode."""
+    fetcher = OptionChainFetcher()
+
+    with patch.dict("os.environ", {"NSE_PLAYWRIGHT_HEADLESS": "1"}, clear=False):
+        assert fetcher._playwright_headless_mode() is True
+
+    with patch.dict("os.environ", {"NSE_PLAYWRIGHT_HEADLESS": "0"}, clear=False):
+        assert fetcher._playwright_headless_mode() is False
