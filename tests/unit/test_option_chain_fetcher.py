@@ -117,3 +117,38 @@ def test_fetch_option_chain_uses_recent_cache_when_all_live_paths_fail(tmp_path)
         assert result.get("is_stale") is True
 
     asyncio.run(_run())
+
+
+def test_fetch_option_chain_uses_jina_before_aiohttp():
+    """Jina relay success should short-circuit aiohttp fallback path."""
+    fetcher = OptionChainFetcher()
+
+    fake_raw = {
+        "records": {
+            "data": [{"strikePrice": 22600, "CE": {}, "PE": {}}],
+            "expiryDates": ["27-Feb-2026"],
+            "underlyingValue": 22610,
+        },
+        "filtered": {"data": [{"strikePrice": 22600, "CE": {}, "PE": {}}]},
+    }
+
+    async def _run():
+        with patch.object(option_chain_module, "_PLAYWRIGHT_OK", True), patch.object(option_chain_module, "_CURL_CFFI_OK", True), patch.object(
+            fetcher, "_fetch_via_nsepython", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_playwright", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_curl_cffi", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_jina_proxy", AsyncMock(return_value=fake_raw)
+        ) as jina_mock, patch.object(
+            fetcher, "_ensure_warmed_up", AsyncMock(return_value=False)
+        ) as warm_mock:
+            result = await fetcher.fetch_option_chain("NIFTY")
+
+        assert result is not None
+        assert result["underlying_price"] == 22610
+        assert jina_mock.await_count == 1
+        assert warm_mock.await_count == 0
+
+    asyncio.run(_run())

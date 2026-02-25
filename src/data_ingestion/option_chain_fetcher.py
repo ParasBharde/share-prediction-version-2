@@ -13,7 +13,9 @@ Fetch strategy (in priority order):
        Install with: pip install playwright && playwright install chromium
     3. curl_cffi browser-impersonation fallback — can bypass some Akamai
        fingerprints by using Chrome-like TLS/JA3 signatures.
-    4. aiohttp browser-simulation fallback — last resort when all other
+    4. Jina AI proxy fallback — server-side fetch relay that can return NSE
+       JSON when local client fingerprints are blocked.
+    5. aiohttp browser-simulation fallback — last resort when all other
        methods fail.
 
 NSE Akamai Anti-Bot Notes:
@@ -28,6 +30,7 @@ NSE Akamai Anti-Bot Notes:
 import asyncio
 import json
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -436,6 +439,24 @@ class OptionChainFetcher:
         except Exception:
             return None
 
+    def _extract_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        """Best-effort extraction of a JSON object from mixed/plain text."""
+        try:
+            direct = json.loads(text)
+            if isinstance(direct, dict):
+                return direct
+        except Exception:
+            pass
+
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
     # ── Playwright real-browser fetch ─────────────────────────────────────────
 
     def _playwright_headless_mode(self) -> bool:
@@ -735,7 +756,8 @@ class OptionChainFetcher:
           1. nsepython.nse_optionchain_scrapper()
           2. Playwright real browser (if installed)
           3. curl_cffi TLS impersonation (if installed)
-          4. aiohttp browser-simulation fallback (5 attempts with backoff)
+          4. Jina AI proxy relay fallback
+          5. aiohttp browser-simulation fallback (5 attempts with backoff)
 
         Args:
             symbol: Index name (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
@@ -779,9 +801,16 @@ class OptionChainFetcher:
                 "Install with: pip install curl_cffi"
             )
 
-        # ── 4. Fallback: aiohttp browser-simulation (likely blocked) ──────────
+        # ── 4. Jina AI relay fallback (server-side fetch proxy) ───────────────
+        raw = await self._fetch_via_jina_proxy(symbol)
+        if raw:
+            parsed = self._parse_option_chain(raw, symbol)
+            self._save_parsed_cache(symbol, parsed)
+            return parsed
+
+        # ── 5. Fallback: aiohttp browser-simulation (likely blocked) ──────────
         logger.info(
-            f"nsepython/playwright/curl_cffi failed for {symbol} — "
+            f"nsepython/playwright/curl_cffi/jina failed for {symbol} — "
             f"falling back to aiohttp (likely blocked by Akamai)"
         )
 
@@ -933,7 +962,7 @@ class OptionChainFetcher:
             logger.error(
                 f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
                 f"Akamai is still blocking this environment even after "
-                f"nsepython/playwright/curl_cffi fallbacks."
+                f"nsepython/playwright/curl_cffi/jina fallbacks."
             )
         else:
             logger.error(
@@ -945,6 +974,52 @@ class OptionChainFetcher:
         cached = self._load_recent_cached_parsed(symbol)
         if cached:
             return cached
+        return None
+
+    async def _fetch_via_jina_proxy(self, symbol: str) -> Optional[Dict]:
+        """Fetch raw option-chain JSON via Jina AI relay as anti-block fallback."""
+        if symbol in _WEEKLY_EXPIRY_INDICES:
+            target_url = f"{NSE_OPTION_CHAIN_URL}?symbol={symbol}"
+        else:
+            target_url = f"{NSE_EQUITY_OPTION_URL}?symbol={symbol}"
+
+        relay_urls = [
+            f"https://r.jina.ai/http://www.nseindia.com/api/option-chain-indices?symbol={symbol}" if symbol in _WEEKLY_EXPIRY_INDICES else f"https://r.jina.ai/http://www.nseindia.com/api/option-chain-equities?symbol={symbol}",
+            f"https://r.jina.ai/http://{target_url.replace('https://', '')}",
+        ]
+
+        session = None
+        try:
+            session = await self._get_session()
+        except Exception as exc:
+            logger.debug(f"Jina relay session unavailable for {symbol}: {exc}")
+            return None
+
+        logger.info(f"Fetching {symbol} option chain via Jina relay …")
+        for relay_url in relay_urls:
+            try:
+                async with session.get(
+                    relay_url,
+                    headers={"Accept": "application/json, text/plain, */*"},
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug(
+                            f"Jina relay HTTP {resp.status} for {symbol}: {relay_url}"
+                        )
+                        continue
+
+                    body = await resp.text()
+                    payload = self._extract_json_object(body)
+                    if isinstance(payload, dict) and payload.get("records"):
+                        logger.info(
+                            f"Jina relay fetch OK for {symbol} "
+                            f"({len(payload.get('records', {}).get('data', []))} records)"
+                        )
+                        return payload
+            except Exception as exc:
+                logger.debug(f"Jina relay failed for {symbol} on {relay_url}: {exc}")
+
+        logger.warning(f"Jina relay fetch yielded no valid data for {symbol}")
         return None
 
     async def _fetch_via_curl_cffi(self, symbol: str) -> Optional[Dict]:
