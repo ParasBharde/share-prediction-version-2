@@ -206,6 +206,7 @@ class OptionChainFetcher:
         # Playwright browser (lazily initialised on first use)
         self._pw_playwright = None
         self._pw_browser = None
+        self._pw_context = None
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -395,6 +396,13 @@ class OptionChainFetcher:
             self._pw_browser = None
 
         # Always teardown stale playwright context before creating a new one
+        if self._pw_context is not None:
+            try:
+                await self._pw_context.close()
+            except Exception:
+                pass
+            self._pw_context = None
+
         if self._pw_playwright is not None:
             try:
                 await self._pw_playwright.__aexit__(None, None, None)
@@ -449,21 +457,12 @@ class OptionChainFetcher:
         """
         Fetch NSE option chain using a real Chromium browser via Playwright.
 
-        Strategy (avoids the ERR_HTTP2_PROTOCOL_ERROR on the option-chain page):
-          1. Navigate to NSE homepage — Akamai's JavaScript runs, sets and
-             validates the _abck cookie. The homepage is a simple page that
-             rarely triggers HTTP/2 blocks.
-          2. Call the option-chain JSON API directly from page.evaluate() —
-             the JS fetch runs inside the trusted browser context that already
-             has valid Akamai cookies, so NSE returns real data.
-
-        This avoids navigating to /option-chain (which triggers the HTTP/2
-        protocol error) while still using JavaScript for Akamai validation.
-
-        Browser is kept alive across scans (shared fetcher). Only the first
-        call of the session incurs the browser-launch overhead (~3–8 s).
-
-        Install with: pip install playwright && playwright install chromium
+        Key reliability improvements:
+          - Reuses a persistent browser context across scans so Akamai cookies
+            survive between fetches.
+          - Warms via homepage and symbol option-chain page.
+          - Tries both context.request.get (cookie-aware) and in-page fetch.
+          - Captures any valid option-chain network response emitted by the page.
         """
         if not _PLAYWRIGHT_OK:
             return None
@@ -479,50 +478,101 @@ class OptionChainFetcher:
         else:
             api_path = "/api/option-chain-equities"
 
+        api_url = f"{NSE_BASE_URL}{api_path}?symbol={symbol}"
+        symbol_page_url = f"{NSE_BASE_URL}/option-chain?symbol={symbol}"
+
         try:
             logger.info(
                 f"Fetching {symbol} option chain via Playwright (real browser) …"
             )
-            context = await self._pw_browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                ignore_https_errors=True,
-            )
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [{name: 'Chrome PDF Plugin'}]
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-IN', 'en-US', 'en']
-                });
-            """)
+
+            if self._pw_context is None:
+                self._pw_context = await self._pw_browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                    ignore_https_errors=True,
+                )
+                await self._pw_context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [{name: 'Chrome PDF Plugin'}]
+                    });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-IN', 'en-US', 'en']
+                    });
+                """)
+
+            context = self._pw_context
             page = await context.new_page()
+            captured_payload: Optional[Dict] = None
+
+            async def _capture_response(resp):
+                nonlocal captured_payload
+                try:
+                    if captured_payload is not None:
+                        return
+                    if api_path not in resp.url:
+                        return
+                    if resp.status != 200:
+                        return
+                    payload = await resp.json()
+                    if isinstance(payload, dict) and payload.get("records"):
+                        captured_payload = payload
+                except Exception:
+                    return
+
+            page.on("response", _capture_response)
 
             try:
-                # ── Step 1: homepage — lets Akamai JS validate _abck cookie ──
+                # Warm cookies on pages where Akamai JS executes.
                 try:
                     await page.goto(
                         NSE_BASE_URL,
                         wait_until="domcontentloaded",
+                        timeout=25_000,
+                    )
+                    await asyncio.sleep(2)
+                except Exception as hp_exc:
+                    logger.debug(f"Playwright homepage navigation failed: {hp_exc}")
+
+                try:
+                    await page.goto(
+                        symbol_page_url,
+                        wait_until="domcontentloaded",
+                        timeout=25_000,
+                    )
+                    await asyncio.sleep(2)
+                except Exception as sym_exc:
+                    logger.debug(f"Playwright symbol page navigation failed: {sym_exc}")
+
+                # Attempt 1: context.request.get using browser context cookies.
+                try:
+                    req_resp = await context.request.get(
+                        api_url,
+                        headers={
+                            "Accept": "application/json, text/plain, */*",
+                            "Referer": symbol_page_url,
+                            "X-Requested-With": "XMLHttpRequest",
+                        },
                         timeout=20_000,
                     )
-                    await asyncio.sleep(3)
-                    logger.debug("Playwright: NSE homepage loaded OK")
-                except Exception as hp_exc:
-                    logger.debug(f"Playwright: homepage navigation failed: {hp_exc}")
-                    await asyncio.sleep(1)
+                    if req_resp.ok:
+                        raw = await req_resp.json()
+                        if isinstance(raw, dict) and raw.get("records"):
+                            logger.info(
+                                f"Playwright request-context fetch OK for {symbol} "
+                                f"({len(raw.get('records', {}).get('data', []))} records)"
+                            )
+                            return raw
+                except Exception as req_exc:
+                    logger.debug(f"Playwright request-context fetch failed: {req_exc}")
 
-                # ── Step 2: API call from JS (cookies are now valid) ──────────
-                # We intentionally do NOT navigate to /option-chain — that page
-                # triggers ERR_HTTP2_PROTOCOL_ERROR. Instead, fetch the JSON
-                # endpoint directly from inside the browser's JavaScript context.
-                raw = None
+                # Attempt 2: in-page fetch.
                 try:
                     raw = await page.evaluate(
                         f"""async () => {{
@@ -533,7 +583,7 @@ class OptionChainFetcher:
                                         credentials: 'include',
                                         headers: {{
                                             'Accept': 'application/json, text/plain, */*',
-                                            'Referer': 'https://www.nseindia.com/option-chain',
+                                            'Referer': '{symbol_page_url}',
                                             'X-Requested-With': 'XMLHttpRequest'
                                         }}
                                     }}
@@ -543,27 +593,40 @@ class OptionChainFetcher:
                             }} catch(e) {{ return null; }}
                         }}"""
                     )
+                    if isinstance(raw, dict) and raw.get("records"):
+                        logger.info(
+                            f"Playwright page-fetch OK for {symbol} "
+                            f"({len(raw.get('records', {}).get('data', []))} records)"
+                        )
+                        return raw
                 except Exception as eval_exc:
                     logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
 
-                if raw and isinstance(raw, dict) and raw.get("records"):
+                # Attempt 3: network-captured payload.
+                if captured_payload and captured_payload.get("records"):
                     logger.info(
-                        f"Playwright fetch OK for {symbol} "
-                        f"({len(raw.get('records', {}).get('data', []))} records)"
+                        f"Playwright network-capture fetch OK for {symbol} "
+                        f"({len(captured_payload.get('records', {}).get('data', []))} records)"
                     )
-                    return raw
+                    return captured_payload
 
-                keys = list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__
                 logger.warning(
                     f"Playwright fetch yielded no valid data for {symbol}. "
-                    f"keys={keys}"
+                    f"request/page/network capture all empty"
                 )
             finally:
                 await page.close()
-                await context.close()
 
         except Exception as exc:
+            # Force context reset on hard failures so next attempt starts fresh.
+            if self._pw_context is not None:
+                try:
+                    await self._pw_context.close()
+                except Exception:
+                    pass
+                self._pw_context = None
             logger.warning(f"Playwright fetch failed for {symbol}: {exc}")
+
         return None
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -691,8 +754,7 @@ class OptionChainFetcher:
                         logger.warning(
                             f"NSE returned empty body for {symbol} "
                             f"(attempt {attempt + 1}) — "
-                            f"Akamai bot-detection triggered. "
-                            f"Fix: pip install curl_cffi"
+                            f"Akamai bot-detection triggered (empty JSON body)."
                         )
 
                     elif status in (401, 403):
@@ -993,7 +1055,13 @@ class OptionChainFetcher:
         }
 
     async def close(self) -> None:
-        """Close the HTTP session and Playwright browser (if open)."""
+        """Close the HTTP session and Playwright resources (if open)."""
+        if self._pw_context is not None:
+            try:
+                await self._pw_context.close()
+            except Exception:
+                pass
+            self._pw_context = None
         if self._pw_browser is not None:
             try:
                 await self._pw_browser.close()
