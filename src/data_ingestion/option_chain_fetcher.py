@@ -372,9 +372,8 @@ class OptionChainFetcher:
         """
         Launch the Playwright Chromium browser if not already running.
 
-        Uses system Chrome (if installed) before falling back to Playwright's
-        bundled Chromium — system Chrome has a real TLS fingerprint that Akamai
-        is less likely to block.
+        Always cleans up any stale playwright/browser state before re-launching
+        so a crashed browser from a previous scan doesn't prevent recovery.
         """
         if self._pw_browser is not None:
             try:
@@ -382,8 +381,14 @@ class OptionChainFetcher:
                     return
             except Exception:
                 pass
-            # Browser disconnected — reset
             self._pw_browser = None
+
+        # Always teardown stale playwright context before creating a new one
+        if self._pw_playwright is not None:
+            try:
+                await self._pw_playwright.__aexit__(None, None, None)
+            except Exception:
+                pass
             self._pw_playwright = None
 
         if not _PLAYWRIGHT_OK or _async_playwright is None:
@@ -394,23 +399,20 @@ class OptionChainFetcher:
 
         self._pw_playwright = await _async_playwright().__aenter__()
 
+        # Windows: --no-sandbox and --disable-dev-shm-usage are Linux-only
+        # and can crash Chrome on Windows. Keep args minimal.
+        import os, sys
         launch_args = [
             "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
             "--no-first-run",
             "--no-default-browser-check",
-            # Handle MITM proxies / corporate SSL inspection
             "--ignore-certificate-errors",
-            "--ignore-ssl-errors",
-            # Bypass system proxy (often causes ERR_HTTP2_PROTOCOL_ERROR)
             "--no-proxy-server",
-            "--disable-extensions",
         ]
+        if sys.platform != "win32":
+            launch_args += ["--no-sandbox", "--disable-dev-shm-usage"]
 
-        # Prefer system Chrome — it has a genuine TLS fingerprint that
-        # Akamai recognises as a real browser, unlike "Chrome for Testing"
-        import os, sys
+        # Prefer system Chrome — genuine TLS fingerprint vs. Chrome-for-Testing
         system_chrome: Optional[str] = None
         if sys.platform == "win32":
             candidates = [
@@ -426,27 +428,28 @@ class OptionChainFetcher:
 
         self._pw_browser = await self._pw_playwright.chromium.launch(
             headless=True,
-            executable_path=system_chrome,   # None → use Playwright's bundled Chrome
+            executable_path=system_chrome,
             args=launch_args,
         )
-        chrome_label = f"system Chrome ({system_chrome})" if system_chrome else "Playwright Chromium"
-        logger.info(f"Playwright browser launched: {chrome_label}")
+        label = f"system Chrome ({system_chrome})" if system_chrome else "Playwright Chromium"
+        logger.info(f"Playwright browser launched: {label}")
 
     async def _fetch_via_playwright(self, symbol: str) -> Optional[Dict]:
         """
         Fetch NSE option chain using a real Chromium browser via Playwright.
 
-        Strategy:
-          1. Navigate to NSE homepage — lets Akamai set and validate cookies
-             via JavaScript execution.
-          2. Navigate to the option chain page — NSE's JS fires the API XHR.
-          3. Intercept the XHR response. If it misses, evaluate a fetch() call
-             from inside the browser JS context (cookies are already valid).
+        Strategy (avoids the ERR_HTTP2_PROTOCOL_ERROR on the option-chain page):
+          1. Navigate to NSE homepage — Akamai's JavaScript runs, sets and
+             validates the _abck cookie. The homepage is a simple page that
+             rarely triggers HTTP/2 blocks.
+          2. Call the option-chain JSON API directly from page.evaluate() —
+             the JS fetch runs inside the trusted browser context that already
+             has valid Akamai cookies, so NSE returns real data.
 
-        Navigation errors are handled gracefully: even if goto() fails, the
-        JS evaluate() is still attempted with whatever cookies exist.
+        This avoids navigating to /option-chain (which triggers the HTTP/2
+        protocol error) while still using JavaScript for Akamai validation.
 
-        Browser is kept alive between calls (shared fetcher). Only the first
+        Browser is kept alive across scans (shared fetcher). Only the first
         call of the session incurs the browser-launch overhead (~3–8 s).
 
         Install with: pip install playwright && playwright install chromium
@@ -461,9 +464,9 @@ class OptionChainFetcher:
             return None
 
         if symbol in _WEEKLY_EXPIRY_INDICES:
-            api_path_fragment = "/api/option-chain-indices"
+            api_path = "/api/option-chain-indices"
         else:
-            api_path_fragment = "/api/option-chain-equities"
+            api_path = "/api/option-chain-equities"
 
         try:
             logger.info(
@@ -478,8 +481,6 @@ class OptionChainFetcher:
                 viewport={"width": 1280, "height": 800},
                 ignore_https_errors=True,
             )
-
-            # Patch away automation signals before any page loads
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
@@ -490,71 +491,49 @@ class OptionChainFetcher:
                     get: () => ['en-IN', 'en-US', 'en']
                 });
             """)
-
             page = await context.new_page()
 
-            # Intercept the XHR response that NSE's JS makes to the API
-            captured: Dict = {}
-
-            async def _on_response(response) -> None:
-                if api_path_fragment in response.url and response.status == 200:
-                    try:
-                        data = await response.json()
-                        if isinstance(data, dict) and data.get("records"):
-                            captured["data"] = data
-                    except Exception:
-                        pass
-
-            page.on("response", _on_response)
-
             try:
-                # ── Step 1: Homepage visit so Akamai JS can set _abck ─────────
+                # ── Step 1: homepage — lets Akamai JS validate _abck cookie ──
                 try:
                     await page.goto(
                         NSE_BASE_URL,
                         wait_until="domcontentloaded",
                         timeout=20_000,
                     )
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
                     logger.debug("Playwright: NSE homepage loaded OK")
                 except Exception as hp_exc:
                     logger.debug(f"Playwright: homepage navigation failed: {hp_exc}")
+                    await asyncio.sleep(1)
 
-                # ── Step 2: Option chain page (NSE JS fires the API XHR) ─────
+                # ── Step 2: API call from JS (cookies are now valid) ──────────
+                # We intentionally do NOT navigate to /option-chain — that page
+                # triggers ERR_HTTP2_PROTOCOL_ERROR. Instead, fetch the JSON
+                # endpoint directly from inside the browser's JavaScript context.
+                raw = None
                 try:
-                    await page.goto(
-                        f"{NSE_BASE_URL}/option-chain?symbol={symbol}",
-                        wait_until="domcontentloaded",
-                        timeout=30_000,
+                    raw = await page.evaluate(
+                        f"""async () => {{
+                            try {{
+                                const r = await fetch(
+                                    '{api_path}?symbol={symbol}',
+                                    {{
+                                        credentials: 'include',
+                                        headers: {{
+                                            'Accept': 'application/json, text/plain, */*',
+                                            'Referer': 'https://www.nseindia.com/option-chain',
+                                            'X-Requested-With': 'XMLHttpRequest'
+                                        }}
+                                    }}
+                                );
+                                if (!r.ok) return null;
+                                return await r.json();
+                            }} catch(e) {{ return null; }}
+                        }}"""
                     )
-                    # Give NSE's JavaScript time to fire the option chain XHR
-                    await asyncio.sleep(5)
-                    logger.debug("Playwright: option-chain page loaded OK")
-                except Exception as nav_exc:
-                    logger.debug(
-                        f"Playwright: option-chain page navigation failed "
-                        f"(will still try JS fetch): {nav_exc}"
-                    )
-                    await asyncio.sleep(2)
-
-                # ── Step 3: Try JS fetch from within browser if XHR missed ───
-                raw = captured.get("data")
-                if not raw:
-                    try:
-                        raw = await page.evaluate(
-                            f"""async () => {{
-                                try {{
-                                    const r = await fetch(
-                                        '{api_path_fragment}?symbol={symbol}',
-                                        {{credentials: 'include',
-                                         headers: {{'Accept': 'application/json'}}}}
-                                    );
-                                    return r.ok ? await r.json() : null;
-                                }} catch(e) {{ return null; }}
-                            }}"""
-                        )
-                    except Exception as eval_exc:
-                        logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
+                except Exception as eval_exc:
+                    logger.debug(f"Playwright JS evaluate failed: {eval_exc}")
 
                 if raw and isinstance(raw, dict) and raw.get("records"):
                     logger.info(
