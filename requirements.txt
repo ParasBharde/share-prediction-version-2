@@ -32,6 +32,15 @@ nsepython>=2.97
 # so Akamai's _abck cookie validation passes. Required for option chain fetching.
 # After installing: playwright install chromium
 playwright>=1.40.0
+# Optional but recommended fallback: Chrome TLS impersonation for NSE API calls.
+curl_cffi>=0.7.4
+
+# SmartAPI local relay dependencies (optional, for broker-provider fallback)
+smartapi-python>=1.5.5
+pyotp>=2.9.0
+logzero>=1.7.0
+websocket-client>=1.8.0
+pycryptodome>=3.20.0
 
 # Telegram Bot
 python-telegram-bot>=20.0
@@ -56,4 +65,3 @@ kaleido>=0.2.1,<1.0.0
 # Utilities
 python-dateutil>=2.8.0
 pytz>=2023.3
-
