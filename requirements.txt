@@ -35,6 +35,13 @@ playwright>=1.40.0
 # Optional but recommended fallback: Chrome TLS impersonation for NSE API calls.
 curl_cffi>=0.7.4
 
+# SmartAPI local relay dependencies (optional, for broker-provider fallback)
+smartapi-python>=1.5.5
+pyotp>=2.9.0
+logzero>=1.7.0
+websocket-client>=1.8.0
+pycryptodome>=3.20.0
+
 # Telegram Bot
 python-telegram-bot>=20.0
 

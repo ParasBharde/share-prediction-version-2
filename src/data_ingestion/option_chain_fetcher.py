@@ -15,7 +15,9 @@ Fetch strategy (in priority order):
        fingerprints by using Chrome-like TLS/JA3 signatures.
     4. Jina AI proxy fallback — server-side fetch relay that can return NSE
        JSON when local client fingerprints are blocked.
-    5. aiohttp browser-simulation fallback — last resort when all other
+    5. Configured external provider fallback — user-supplied URL for broker or
+       private relay APIs (recommended when NSE blocks all public paths).
+    6. aiohttp browser-simulation fallback — last resort when all other
        methods fail.
 
 NSE Akamai Anti-Bot Notes:
@@ -29,6 +31,7 @@ NSE Akamai Anti-Bot Notes:
 
 import asyncio
 import json
+import os
 import random
 import re
 import shutil
@@ -457,6 +460,22 @@ class OptionChainFetcher:
         except Exception:
             return None
 
+    def _normalize_external_payload(
+        self,
+        payload: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize external provider responses into NSE-like raw schema."""
+        if isinstance(payload, dict) and payload.get("records"):
+            return payload
+
+        if isinstance(payload, dict):
+            for key in ("data", "result", "payload"):
+                candidate = payload.get(key)
+                if isinstance(candidate, dict) and candidate.get("records"):
+                    return candidate
+
+        return None
+
     # ── Playwright real-browser fetch ─────────────────────────────────────────
 
     def _playwright_headless_mode(self) -> bool:
@@ -757,7 +776,8 @@ class OptionChainFetcher:
           2. Playwright real browser (if installed)
           3. curl_cffi TLS impersonation (if installed)
           4. Jina AI proxy relay fallback
-          5. aiohttp browser-simulation fallback (5 attempts with backoff)
+          5. Configured external provider fallback
+          6. aiohttp browser-simulation fallback (5 attempts with backoff)
 
         Args:
             symbol: Index name (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
@@ -808,9 +828,16 @@ class OptionChainFetcher:
             self._save_parsed_cache(symbol, parsed)
             return parsed
 
-        # ── 5. Fallback: aiohttp browser-simulation (likely blocked) ──────────
+        # ── 5. Configured external provider fallback (broker/private relay) ───
+        raw = await self._fetch_via_configured_provider(symbol)
+        if raw:
+            parsed = self._parse_option_chain(raw, symbol)
+            self._save_parsed_cache(symbol, parsed)
+            return parsed
+
+        # ── 6. Fallback: aiohttp browser-simulation (likely blocked) ──────────
         logger.info(
-            f"nsepython/playwright/curl_cffi/jina failed for {symbol} — "
+            f"nsepython/playwright/curl_cffi/jina/configured-provider failed for {symbol} — "
             f"falling back to aiohttp (likely blocked by Akamai)"
         )
 
@@ -962,7 +989,7 @@ class OptionChainFetcher:
             logger.error(
                 f"All {max_attempts} aiohttp attempts failed for {symbol} option chain. "
                 f"Akamai is still blocking this environment even after "
-                f"nsepython/playwright/curl_cffi/jina fallbacks."
+                f"nsepython/playwright/curl_cffi/jina/configured-provider fallbacks."
             )
         else:
             logger.error(
@@ -974,6 +1001,72 @@ class OptionChainFetcher:
         cached = self._load_recent_cached_parsed(symbol)
         if cached:
             return cached
+        return None
+
+    async def _fetch_via_configured_provider(self, symbol: str) -> Optional[Dict]:
+        """
+        Fetch via user-configured external provider.
+
+        Configure with environment variable:
+          OPTION_CHAIN_PROVIDER_URL
+
+        URL supports either:
+          - query mode: https://host/path?symbol=NIFTY
+          - template mode: https://host/path/{symbol}
+
+        Optional auth header:
+          OPTION_CHAIN_PROVIDER_TOKEN (sent as Bearer token)
+        """
+        provider_url = os.environ.get("OPTION_CHAIN_PROVIDER_URL", "").strip()
+        if not provider_url:
+            return None
+
+        if "{symbol}" in provider_url:
+            final_url = provider_url.format(symbol=symbol)
+        elif "symbol=" in provider_url:
+            final_url = provider_url
+        else:
+            sep = "&" if "?" in provider_url else "?"
+            final_url = f"{provider_url}{sep}symbol={symbol}"
+
+        headers = {"Accept": "application/json, text/plain, */*"}
+        token = os.environ.get("OPTION_CHAIN_PROVIDER_TOKEN", "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        logger.info(f"Fetching {symbol} option chain via configured provider …")
+
+        session = None
+        try:
+            session = await self._get_session()
+        except Exception as exc:
+            logger.debug(f"Configured provider session unavailable for {symbol}: {exc}")
+            return None
+
+        try:
+            async with session.get(final_url, headers=headers) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        f"Configured provider HTTP {resp.status} for {symbol}"
+                    )
+                    return None
+
+                text_body = await resp.text()
+                payload = self._extract_json_object(text_body)
+                normalized = self._normalize_external_payload(payload)
+                if normalized and normalized.get("records"):
+                    logger.info(
+                        f"Configured provider fetch OK for {symbol} "
+                        f"({len(normalized.get('records', {}).get('data', []))} records)"
+                    )
+                    return normalized
+
+                logger.warning(
+                    f"Configured provider returned unsupported payload for {symbol}"
+                )
+        except Exception as exc:
+            logger.warning(f"Configured provider fetch failed for {symbol}: {exc}")
+
         return None
 
     async def _fetch_via_jina_proxy(self, symbol: str) -> Optional[Dict]:

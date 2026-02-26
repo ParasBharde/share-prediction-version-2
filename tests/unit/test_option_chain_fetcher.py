@@ -152,3 +152,40 @@ def test_fetch_option_chain_uses_jina_before_aiohttp():
         assert warm_mock.await_count == 0
 
     asyncio.run(_run())
+
+
+def test_fetch_option_chain_uses_configured_provider_before_aiohttp():
+    """Configured provider success should short-circuit aiohttp fallback."""
+    fetcher = OptionChainFetcher()
+
+    fake_raw = {
+        "records": {
+            "data": [{"strikePrice": 22700, "CE": {}, "PE": {}}],
+            "expiryDates": ["27-Feb-2026"],
+            "underlyingValue": 22720,
+        },
+        "filtered": {"data": [{"strikePrice": 22700, "CE": {}, "PE": {}}]},
+    }
+
+    async def _run():
+        with patch.object(option_chain_module, "_PLAYWRIGHT_OK", True), patch.object(option_chain_module, "_CURL_CFFI_OK", True), patch.object(
+            fetcher, "_fetch_via_nsepython", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_playwright", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_curl_cffi", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_jina_proxy", AsyncMock(return_value=None)
+        ), patch.object(
+            fetcher, "_fetch_via_configured_provider", AsyncMock(return_value=fake_raw)
+        ) as provider_mock, patch.object(
+            fetcher, "_ensure_warmed_up", AsyncMock(return_value=False)
+        ) as warm_mock:
+            result = await fetcher.fetch_option_chain("NIFTY")
+
+        assert result is not None
+        assert result["underlying_price"] == 22720
+        assert provider_mock.await_count == 1
+        assert warm_mock.await_count == 0
+
+    asyncio.run(_run())
