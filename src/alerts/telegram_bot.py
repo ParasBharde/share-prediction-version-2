@@ -21,7 +21,7 @@ Fallbacks:
 import asyncio
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 try:
     from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -71,6 +71,38 @@ MAX_RETRIES = DEFAULT_MAX_RETRIES
 # Base delay between retries in seconds (exponential backoff)
 RETRY_BASE_DELAY = 2
 
+def _chunk_message(text: str, max_len: int = 4096) -> Sequence[str]:
+    """Split long Telegram messages into <= max_len chunks on line boundaries."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    for line in text.splitlines(keepends=True):
+        if len(line) > max_len:
+            if current:
+                chunks.append("".join(current))
+                current = []
+                current_len = 0
+            for i in range(0, len(line), max_len):
+                chunks.append(line[i:i + max_len])
+            continue
+
+        if current_len + len(line) > max_len and current:
+            chunks.append("".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += len(line)
+
+    if current:
+        chunks.append("".join(current))
+
+    return chunks
+
 
 class TelegramBot:
     """Telegram bot client for delivering trading alerts."""
@@ -115,8 +147,9 @@ class TelegramBot:
         When ``image_path`` is provided and the file exists, the alert is
         delivered as a photo (``send_photo``) with the message as the
         caption.  Otherwise a plain text message is sent (``send_message``).
-        Telegram captions are limited to 1024 characters; longer messages
-        are automatically truncated.
+        Telegram captions are limited to 1024 characters; when a chart is
+        attached and the message is longer, the remaining text is sent in
+        follow-up message chunks to preserve full details.
 
         Retries up to MAX_RETRIES times with exponential backoff on
         transient failures. Failed messages are queued for later retry.
@@ -154,7 +187,8 @@ class TelegramBot:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 if send_as_photo:
-                    # Telegram caption limit is 1 024 characters
+                    # Telegram caption limit is 1,024 chars. Send chart first
+                    # with a compact caption, then send full text in messages.
                     caption = message[:1024]
                     with open(image_path, "rb") as photo_file:
                         await self._bot.send_photo(
@@ -164,14 +198,26 @@ class TelegramBot:
                             parse_mode="Markdown",
                             reply_markup=reply_markup,
                         )
+
+                    # If content exceeds caption budget, send full details
+                    # as one or more follow-up messages (4,096 char each).
+                    if len(message) > 1024:
+                        for chunk in _chunk_message(message[1024:]):
+                            await self._bot.send_message(
+                                chat_id=self.chat_id,
+                                text=chunk,
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
                 else:
-                    await self._bot.send_message(
-                        chat_id=self.chat_id,
-                        text=message,
-                        parse_mode="Markdown",
-                        reply_markup=reply_markup,
-                        disable_web_page_preview=True,
-                    )
+                    for idx, chunk in enumerate(_chunk_message(message)):
+                        await self._bot.send_message(
+                            chat_id=self.chat_id,
+                            text=chunk,
+                            parse_mode="Markdown",
+                            reply_markup=reply_markup if idx == 0 else None,
+                            disable_web_page_preview=True,
+                        )
 
                 alert_sent_counter.labels(
                     priority=priority,
