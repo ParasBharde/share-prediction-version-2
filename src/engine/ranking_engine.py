@@ -31,6 +31,9 @@ from src.utils.config_loader import load_config, get_nested
 logger = get_logger(__name__)
 
 # Default ranking weights
+# Note: weights must sum to 1.0.  The RS component is a boost applied on
+# top of the composite score (not a weight in the linear sum) so the base
+# weights below are unchanged.
 DEFAULT_CONFIDENCE_WEIGHT    = 0.45   # raised from 0.40 (most predictive)
 DEFAULT_RISK_REWARD_WEIGHT   = 0.30   # raised from 0.25
 DEFAULT_STRATEGY_COUNT_WEIGHT = 0.15
@@ -41,6 +44,16 @@ DEFAULT_GAP_RISK_WEIGHT      = 0.10   # replaces recency (irrelevant for same-da
 # Score = 1 - min(gap_pct / MAX_ACCEPTABLE_GAP, 1.0)
 DEFAULT_MAX_ACCEPTABLE_GAP_PCT = 5.0   # >5% open gap = highest gap risk
 
+# ── Relative Strength (RS) component ──────────────────────────────────────
+# Boost applied to the final composite score when a stock's 20-day return
+# outperforms the Nifty 50 index over the same period.  The boost is a
+# flat additive bonus (not a multiplier) so it cannot overwhelm a bad
+# pattern signal, but provides a meaningful tie-breaker between equal
+# pattern setups.
+DEFAULT_RS_BOOST             = 0.05   # +5 pp composite boost for RS leaders
+# Lookback used to compute each signal's return (stored in metadata)
+RS_RETURN_KEY                = "return_20d"
+
 # Sector diversification
 DEFAULT_MAX_PER_SECTOR = 2
 # Sector placeholder: when sector metadata is unavailable, skip the cap
@@ -50,20 +63,27 @@ _UNKNOWN_SECTOR = "Unknown"
 def rank_signals(
     signals: List[AggregatedSignal],
     max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
+    nifty_return_20d: float = 0.0,
 ) -> List[AggregatedSignal]:
     """
     Rank aggregated signals using a multi-factor scoring pipeline.
 
     The pipeline applies the following stages in order:
     1. Calculate a composite score for each signal.
-    2. Apply a recency penalty to down-weight stale signals.
-    3. Sort by composite score descending.
-    4. Apply sector diversification to cap exposure per sector.
+    2. Apply Relative Strength (RS) boost for stocks outperforming Nifty 50.
+    3. Apply gap-risk adjustment to down-weight stocks with large open gaps.
+    4. Sort by composite score descending.
+    5. Apply sector diversification to cap exposure per sector.
 
     Args:
         signals: List of AggregatedSignal objects to rank.
         max_per_sector: Maximum signals allowed per sector
             in the final output. Defaults to 2.
+        nifty_return_20d: Nifty 50's 20-day price return (as a percentage,
+            e.g. 3.5 means +3.5%).  When provided, signals whose metadata
+            carries a ``return_20d`` value exceeding this benchmark receive
+            a composite score boost (DEFAULT_RS_BOOST).  Pass 0.0 (default)
+            to disable the RS component when Nifty data is unavailable.
 
     Returns:
         Ranked and filtered list of AggregatedSignal objects,
@@ -82,7 +102,7 @@ def rank_signals(
 
     logger.info(
         f"Ranking {len(signals)} signals "
-        f"(max_per_sector={max_sector})",
+        f"(max_per_sector={max_sector}, nifty_20d={nifty_return_20d:.2f}%)",
         extra={"signal_count": len(signals)},
     )
 
@@ -99,11 +119,19 @@ def rank_signals(
             )
             scored_signals.append((signal, 0.0))
 
-    # Stage 2: Apply gap-risk adjustment (replaces useless recency penalty)
+    # Stage 2: Relative Strength boost — reward stocks that are already
+    # outperforming the Nifty 50 index over the past 20 days.  This
+    # surfaces institutional-grade momentum leaders from within the pattern
+    # set rather than ranking purely on signal quality.
+    scored_signals = _apply_rs_boost(
+        scored_signals, nifty_return_20d, ranking_config
+    )
+
+    # Stage 3: Apply gap-risk adjustment (replaces useless recency penalty)
     # For BTST: a stock that gapped up heavily has less upside in the holding period.
     scored_signals = _apply_gap_risk_adjustment(scored_signals, ranking_config)
 
-    # Stage 3: Sort by composite score descending
+    # Stage 4: Sort by composite score descending
     scored_signals.sort(key=lambda pair: pair[1], reverse=True)
 
     logger.debug(
@@ -114,7 +142,7 @@ def rank_signals(
         )
     )
 
-    # Stage 4: Sector diversification
+    # Stage 5: Sector diversification
     ranked = _apply_sector_diversification(
         scored_signals, max_per_sector=max_sector
     )
@@ -192,6 +220,74 @@ def _calculate_composite_score(
     )
 
     return composite
+
+
+def _apply_rs_boost(
+    scored_signals: List[tuple],
+    nifty_return_20d: float = 0.0,
+    config: Optional[Dict[str, Any]] = None,
+) -> List[tuple]:
+    """
+    Apply a Relative Strength (RS) score boost for Nifty outperformers.
+
+    A stock that has already risen more than the Nifty 50 index over the
+    past 20 trading days is showing genuine institutional buying interest
+    — not just a sector rotation or index lift.  Rewarding these stocks
+    in the ranking surfaces high-conviction momentum breakouts.
+
+    Logic
+    -----
+    Each signal's ``return_20d`` is extracted from its individual signal
+    metadata.  If ``return_20d > nifty_return_20d``, a flat additive boost
+    (DEFAULT_RS_BOOST, 0.05 by default) is added to the composite score.
+
+    The ``return_20d`` value must be pre-computed by the caller (e.g.
+    the scan script) and stored in each signal's metadata dict:
+
+        signal.metadata["return_20d"] = (close_today / close_20d_ago - 1) * 100
+
+    When the metadata key is absent the signal's score is left unchanged —
+    the function is a safe no-op when RS data is unavailable.
+
+    Args:
+        scored_signals: List of (AggregatedSignal, score) tuples.
+        nifty_return_20d: Nifty 50 20-day return in percent (e.g. 3.5 = +3.5%).
+            Set to 0.0 to disable the RS boost.
+        config: Optional ranking config for custom boost magnitude.
+
+    Returns:
+        Updated list of (AggregatedSignal, adjusted_score) tuples.
+    """
+    cfg = config or {}
+    rs_boost = get_nested(cfg, "rs_boost", DEFAULT_RS_BOOST)
+
+    # No-op when Nifty return is not provided or RS boost is disabled
+    if nifty_return_20d == 0.0 and rs_boost == 0.0:
+        return scored_signals
+
+    boosted = []
+    for signal, score in scored_signals:
+        # Extract return_20d from the first individual signal that has it
+        stock_return_20d: Optional[float] = None
+        for ind_sig in signal.individual_signals:
+            meta = ind_sig.get("metadata", {})
+            if RS_RETURN_KEY in meta:
+                stock_return_20d = float(meta[RS_RETURN_KEY])
+                break
+
+        if stock_return_20d is not None and stock_return_20d > nifty_return_20d:
+            boosted_score = score + rs_boost
+            logger.debug(
+                f"{signal.symbol}: RS boost applied "
+                f"(stock_20d={stock_return_20d:.1f}% > "
+                f"nifty_20d={nifty_return_20d:.1f}%, "
+                f"score {score:.4f} -> {boosted_score:.4f})"
+            )
+            boosted.append((signal, boosted_score))
+        else:
+            boosted.append((signal, score))
+
+    return boosted
 
 
 def _apply_gap_risk_adjustment(

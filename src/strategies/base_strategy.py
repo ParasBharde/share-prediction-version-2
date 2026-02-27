@@ -313,6 +313,63 @@ class BaseStrategy(ABC):
             val = float(tr.ewm(span=period, adjust=False).mean().iloc[-1])
         return float(val)
 
+    def _get_atr_multiplier(
+        self,
+        df: pd.DataFrame,
+        period: int = 14,
+        multiplier: float = 1.5,
+    ) -> float:
+        """
+        Return ATR × multiplier as an adaptive stop-loss distance.
+
+        Use this instead of a fixed-percentage SL so that the stop
+        automatically tightens on low-volatility stocks and widens on
+        high-volatility ones, matching the stock's natural noise.
+
+        Usage:
+            atr_sl = entry_price - self._get_atr_multiplier(df)
+
+        Args:
+            df: OHLCV DataFrame.
+            period: ATR lookback period (default 14).
+            multiplier: Factor applied to ATR (default 1.5).
+
+        Returns:
+            ATR × multiplier as an absolute price distance.
+        """
+        return self._calculate_atr(df, period) * multiplier
+
+    def _check_strong_close(self, df: pd.DataFrame) -> bool:
+        """
+        Breakout quality / wick-rejection filter.
+
+        A BUY signal is only valid if the breakout candle closes in the
+        top 25 % of its High-Low range, i.e. the close-to-low distance
+        is at least 75 % of the total candle range:
+
+            (close - low) / (high - low) >= 0.75
+
+        This filters out bearish-wick candles where the price surged
+        intraday but was rejected back down — a classic false breakout.
+
+        Doji candles (range == 0) are treated as neutral and return True
+        so they are not incorrectly rejected.
+
+        Args:
+            df: OHLCV DataFrame; the *last* row is the breakout candle.
+
+        Returns:
+            True if the close qualifies as a strong close, False otherwise.
+        """
+        last = df.iloc[-1]
+        high = float(last["high"])
+        low = float(last["low"])
+        close = float(last["close"])
+        candle_range = high - low
+        if candle_range <= 0:
+            return True  # Doji / flat candle — neutral, do not reject
+        return (close - low) / candle_range >= 0.75
+
     def validate_signal_rules(
         self,
         entry_price: float,

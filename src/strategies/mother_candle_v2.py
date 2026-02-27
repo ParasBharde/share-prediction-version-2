@@ -165,8 +165,11 @@ class MotherCandleV2Strategy(BaseStrategy):
 
         # ════════════════════════════════════════════════════════════
         # FIND MOTHER CANDLE PATTERN (original logic)
+        # ATR is pre-computed here and forwarded to _discover_mother_candle
+        # so baby tolerance adapts to the stock's real noise (0.1 × ATR)
+        # instead of a fixed 0.1% of mother-candle range.
         # ════════════════════════════════════════════════════════════
-        pattern = self._discover_mother_candle(df)
+        pattern = self._discover_mother_candle(df, atr=atr)
         if pattern is None:
             self._scan_stats["no_pattern"] += 1
             return None
@@ -258,9 +261,23 @@ class MotherCandleV2Strategy(BaseStrategy):
 
         vol_r = volume_ratio(df["volume"], 20)
         breakout_vol_ratio = float(vol_r.iloc[-1])
-        
+
         if breakout_vol_ratio < self.breakout_vol_multiplier:
             self._scan_stats["volume_rejected"] += 1
+            return None
+
+        # ════════════════════════════════════════════════════════════
+        # STRONG-CLOSE / WICK-REJECTION FILTER
+        # BUY is only valid when the breakout candle closes in the top
+        # 25% of its High-Low range, ensuring the move was sustained and
+        # not rejected by sellers before the close.
+        # ════════════════════════════════════════════════════════════
+        if not self._check_strong_close(df):
+            self._scan_stats["volume_rejected"] += 1
+            logger.debug(
+                f"{symbol}: Weak close — breakout candle has a bearish "
+                "rejection wick (close not in top 25% of range)"
+            )
             return None
 
         # ════════════════════════════════════════════════════════════
@@ -347,6 +364,15 @@ class MotherCandleV2Strategy(BaseStrategy):
                 "atr_pct": round(atr_pct, 2),
                 "min_required": self.min_atr_pct,
             },
+            "strong_close": {
+                "passed": True,
+                "close_position_pct": round(
+                    (float(df["close"].iloc[-1]) - float(df["low"].iloc[-1]))
+                    / max(float(df["high"].iloc[-1]) - float(df["low"].iloc[-1]), 1e-9)
+                    * 100,
+                    1,
+                ),
+            },
         }
 
         # Enhanced confidence calculation
@@ -395,8 +421,8 @@ class MotherCandleV2Strategy(BaseStrategy):
             target_price=target_price,
             stop_loss=stop_loss,
             priority=AlertPriority.HIGH,
-            indicators_met=6,  # Now 6 filters instead of 4
-            total_indicators=6,
+            indicators_met=7,  # Now 7 filters: trend, ATR, pattern, age, breakout, volume, strong_close
+            total_indicators=7,
             indicator_details=indicator_details,
             metadata={
                 "timeframe": self.timeframe,
@@ -443,10 +469,17 @@ class MotherCandleV2Strategy(BaseStrategy):
         self._scan_stats["signals"] += 1
         return signal
 
-    def _discover_mother_candle(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    def _discover_mother_candle(
+        self, df: pd.DataFrame, atr: float = 0.0
+    ) -> Optional[Dict[str, Any]]:
         """
         Right-to-Left scan to find Mother Candle pattern.
-        (Same as original - unchanged)
+
+        The baby-candle tolerance is adaptive: when ``atr`` > 0 (provided
+        by the caller from the pre-computed ATR14), tolerance is set to
+        0.1 × ATR so that it scales with the stock's actual volatility.
+        When ``atr`` == 0 (fallback), the original formula is used:
+        m_range × (baby_tolerance_pct / 100).
         """
         last_candle = df.iloc[-1]
         last_close = float(last_candle["close"])
@@ -495,7 +528,14 @@ class MotherCandleV2Strategy(BaseStrategy):
             if baby_count < self.min_babies:
                 continue
 
-            tolerance = m_range * (self.baby_tolerance_pct / 100)
+            # Adaptive tolerance: 0.1 × ATR when ATR is available so the
+            # containment check scales with the stock's natural volatility.
+            # Falls back to the config-driven fixed percentage otherwise.
+            tolerance = (
+                0.1 * atr
+                if atr > 0
+                else m_range * (self.baby_tolerance_pct / 100)
+            )
             upper_limit = m_high + tolerance
             lower_limit = m_low - tolerance
 

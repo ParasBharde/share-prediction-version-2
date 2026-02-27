@@ -101,6 +101,11 @@ class TelegramBot:
             extra={"chat_id": self.chat_id},
         )
 
+    # Maximum characters for a Telegram photo caption
+    _CAPTION_LIMIT = 1024
+    # Maximum characters for a Telegram text message
+    _MESSAGE_LIMIT = 4096
+
     async def send_alert(
         self,
         message: str,
@@ -112,17 +117,26 @@ class TelegramBot:
         Send an alert message to Telegram with optional inline buttons
         and an optional chart image attachment.
 
-        When ``image_path`` is provided and the file exists, the alert is
-        delivered as a photo (``send_photo``) with the message as the
-        caption.  Otherwise a plain text message is sent (``send_message``).
-        Telegram captions are limited to 1024 characters; longer messages
-        are automatically truncated.
+        Delivery modes
+        --------------
+        * **Photo + full text**: When ``image_path`` points to an existing
+          file, the chart is sent first via ``send_photo`` with a short
+          caption (≤ 1 024 chars).  If the full signal message exceeds the
+          caption limit, the complete text is immediately sent as a
+          follow-up ``send_message`` so no information is lost.
+        * **Text only**: When no image is provided, the full message is
+          sent via ``send_message`` (≤ 4 096 chars; longer messages are
+          split at the limit).
+
+        All API calls use ``parse_mode='HTML'`` for robust formatting —
+        messages should use HTML tags (``<b>``, ``<i>``, ``<code>``) rather
+        than Markdown syntax.
 
         Retries up to MAX_RETRIES times with exponential backoff on
         transient failures. Failed messages are queued for later retry.
 
         Args:
-            message: The alert message text (supports Markdown).
+            message: The alert message text formatted with HTML tags.
             priority: Alert priority level (HIGH, MEDIUM, LOW, CRITICAL).
             inline_buttons: Optional list of button dicts with keys
                 ``text`` and ``callback_data``.  Example::
@@ -154,21 +168,37 @@ class TelegramBot:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 if send_as_photo:
-                    # Telegram caption limit is 1 024 characters
-                    caption = message[:1024]
+                    # Step 1: Send the chart image.
+                    # Captions are limited to 1 024 characters — use the
+                    # first chunk as caption so the image has context.
+                    caption = message[: self._CAPTION_LIMIT]
                     with open(image_path, "rb") as photo_file:
                         await self._bot.send_photo(
                             chat_id=self.chat_id,
                             photo=photo_file,
                             caption=caption,
-                            parse_mode="Markdown",
+                            parse_mode="HTML",
                             reply_markup=reply_markup,
                         )
+
+                    # Step 2: If the full message is longer than the caption
+                    # limit, send the complete text as a follow-up message
+                    # so that all signal details are delivered in full.
+                    if len(message) > self._CAPTION_LIMIT:
+                        full_text = message[: self._MESSAGE_LIMIT]
+                        await self._bot.send_message(
+                            chat_id=self.chat_id,
+                            text=full_text,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
                 else:
+                    # Plain text delivery — split if over the 4 096 char limit
+                    text = message[: self._MESSAGE_LIMIT]
                     await self._bot.send_message(
                         chat_id=self.chat_id,
-                        text=message,
-                        parse_mode="Markdown",
+                        text=text,
+                        parse_mode="HTML",
                         reply_markup=reply_markup,
                         disable_web_page_preview=True,
                     )
