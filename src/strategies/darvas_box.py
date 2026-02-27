@@ -184,23 +184,38 @@ class DarvasBoxStrategy(BaseStrategy):
             )
             return None
 
+        # ── 3b. Strong-Close / Wick-Rejection filter ──────────────────────
+        # BUY is only valid when the breakout candle closes in the top 25%
+        # of its range — filters out upper-wick rejection candles.
+        if not self._check_strong_close(df):
+            self._scan_stats["volume_rejected"] += 1
+            logger.debug(
+                f"{symbol}: Weak close — breakout candle has a bearish "
+                "rejection wick (close not in top 25% of range)"
+            )
+            return None
+
         # ── 4. Entry / Target / Stop-Loss ─────────────────────────────────
         entry_price = round(last_close, 2)
         target_price = round(
             entry_price * (1 + self.target_pct / 100), 2
         )
 
+        # ATR-adaptive SL: entry - (1.5 × ATR14) vs box_bottom — use
+        # whichever is tighter (higher price = less risk) so that the
+        # stop-loss adapts to the stock's actual volatility rather than a
+        # blanket 3% cut that is too tight for volatile stocks and too
+        # loose for quiet ones.
+        atr_sl = round(entry_price - self._get_atr_multiplier(df), 2)
         box_bottom_sl = round(box["box_bottom"], 2)
-        fixed_sl = round(
-            entry_price * (1 - self.stop_loss_pct / 100), 2
-        )
 
-        if self.use_box_bottom_sl and box_bottom_sl > fixed_sl:
-            stop_loss = box_bottom_sl
-            sl_method = "box_bottom"
+        if self.use_box_bottom_sl:
+            # Tighter = higher price = max of the two SL candidates
+            stop_loss = max(atr_sl, box_bottom_sl)
+            sl_method = "atr_or_box_bottom"
         else:
-            stop_loss = fixed_sl
-            sl_method = f"fixed_{self.stop_loss_pct}pct"
+            stop_loss = atr_sl
+            sl_method = "atr_1.5x"
 
         sl_distance_pct = (
             abs(entry_price - stop_loss) / entry_price * 100
@@ -276,6 +291,15 @@ class DarvasBoxStrategy(BaseStrategy):
                 "ema": round(last_ema, 2),
                 "price_vs_ema_pct": round(price_vs_ema_pct, 2),
             },
+            "strong_close": {
+                "passed": True,
+                "close_position_pct": round(
+                    (last_close - float(df["low"].iloc[-1]))
+                    / max(float(df["high"].iloc[-1]) - float(df["low"].iloc[-1]), 1e-9)
+                    * 100,
+                    1,
+                ),
+            },
         }
 
         signal = TradingSignal(
@@ -288,8 +312,8 @@ class DarvasBoxStrategy(BaseStrategy):
             target_price=target_price,
             stop_loss=stop_loss,
             priority=AlertPriority.HIGH,
-            indicators_met=3,
-            total_indicators=3,
+            indicators_met=4,
+            total_indicators=4,
             indicator_details=indicator_details,
             metadata={
                 "timeframe": "1D",

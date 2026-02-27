@@ -206,6 +206,17 @@ class FlagPatternStrategy(BaseStrategy):
             )
             return None
 
+        # ── 3b. Strong-Close / Wick-Rejection filter ──────────────────────
+        # BUY is only valid when the breakout candle closes in the top 25%
+        # of its range — filters out upper-wick rejection candles.
+        if not self._check_strong_close(df):
+            self._scan_stats["volume_rejected"] += 1
+            logger.debug(
+                f"{symbol}: Weak close — breakout candle has a bearish "
+                "rejection wick (close not in top 25% of range)"
+            )
+            return None
+
         # ── 4. Entry / Target / SL ────────────────────────────────────────
         entry_price = round(last_close, 2)
         flag_high = pattern["flag_high"]
@@ -219,17 +230,19 @@ class FlagPatternStrategy(BaseStrategy):
                 entry_price * (1 + self.target_pct / 100), 2
             )
 
+        # ATR-adaptive SL: entry - (1.5 × ATR14) vs flag_low — use whichever
+        # is tighter (higher price, i.e. less risk) so the stop hugs the
+        # stock's natural noise rather than a fixed 3% blanket cut.
+        atr_sl = round(entry_price - self._get_atr_multiplier(df), 2)
         flag_low_sl = round(flag_low, 2)
-        fixed_sl = round(
-            entry_price * (1 - self.stop_loss_pct / 100), 2
-        )
 
-        if self.use_flag_low_sl and flag_low_sl > fixed_sl:
-            stop_loss = flag_low_sl
-            sl_method = "flag_low"
+        if self.use_flag_low_sl:
+            # Tighter = higher price = max of the two SL candidates
+            stop_loss = max(atr_sl, flag_low_sl)
+            sl_method = "atr_or_flag_low"
         else:
-            stop_loss = fixed_sl
-            sl_method = f"fixed_{self.stop_loss_pct}pct"
+            stop_loss = atr_sl
+            sl_method = "atr_1.5x"
 
         sl_distance_pct = (
             abs(entry_price - stop_loss) / entry_price * 100
@@ -308,6 +321,15 @@ class FlagPatternStrategy(BaseStrategy):
                 "vol_ratio": round(vol_ratio, 2),
                 "threshold": self.breakout_vol_multiplier,
             },
+            "strong_close": {
+                "passed": True,
+                "close_position_pct": round(
+                    (last_close - float(df["low"].iloc[-1]))
+                    / max(float(df["high"].iloc[-1]) - float(df["low"].iloc[-1]), 1e-9)
+                    * 100,
+                    1,
+                ),
+            },
         }
 
         signal = TradingSignal(
@@ -320,8 +342,8 @@ class FlagPatternStrategy(BaseStrategy):
             target_price=target_price,
             stop_loss=stop_loss,
             priority=AlertPriority.HIGH,
-            indicators_met=4,
-            total_indicators=4,
+            indicators_met=5,
+            total_indicators=5,
             indicator_details=indicator_details,
             metadata={
                 "timeframe": "1D",
