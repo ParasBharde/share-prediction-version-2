@@ -572,20 +572,29 @@ async def run_daily_scan(
                 )
 
             # Apply market context filter
-            # In BEARISH regime, suppress BUY/STRONG_BUY signals.
+            # In BEARISH regime, suppress BUY/STRONG_BUY signals only when
+            # confidence is below override threshold (default: 70%).
+            # This allows high-confidence BUY setups through regardless of regime.
             # (Options BUY_PE are stored as SELL signal_type — those pass through)
             if not market_ctx.get("allow_buys", True):
+                regime_override_conf = config.get("scanning", {}).get(
+                    "regime_buy_override_confidence", 0.70
+                )
                 before_count = len(filtered)
                 filtered = [
                     s for s in filtered
-                    if s.signal_type.value
-                    not in ("BUY", "STRONG_BUY")
+                    if (
+                        s.signal_type.value
+                        not in ("BUY", "STRONG_BUY")
+                    )
+                    or s.weighted_confidence >= regime_override_conf
                 ]
                 suppressed = before_count - len(filtered)
                 if suppressed:
                     logger.warning(
                         f"Market regime {market_ctx['regime']}: "
-                        f"suppressed {suppressed} BUY signals"
+                        f"suppressed {suppressed} BUY signals "
+                        f"below {regime_override_conf:.0%} confidence"
                     )
 
             results["signals_generated"] = len(filtered)
