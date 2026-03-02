@@ -96,16 +96,11 @@ class OptionsPCRStrategy(BaseStrategy):
             self._scan_stats["no_option_chain"] += 1
             return None
 
-        # ── Expiry-day guard: PCR is unreliable on expiry ────────────────────
-        # On expiry day, OI unwinds aggressively. PCR values spike without
-        # reflecting real sentiment. Skip this strategy on expiry day.
-        if is_expiry_day:
-            self._scan_stats["expiry_day_skip"] += 1
-            logger.debug(
-                f"{symbol}: PCR strategy skipped — today is expiry day "
-                "(PCR unreliable on expiry)"
-            )
-            return None
+        # ── Expiry-day note ──────────────────────────────────────────────────
+        # The option chain already switched to the NEXT expiry on expiry day,
+        # so the PCR we are reading is next-week's OI — which is valid.
+        # We continue trading but reduce confidence by 10% as a caution.
+        expiry_day_penalty = 0.10 if is_expiry_day else 0.0
 
         # ── IV filter ─────────────────────────────────────────────────────────
         atm_ce_iv = option_chain.get("atm_ce_iv", 0) or 0
@@ -274,12 +269,15 @@ class OptionsPCRStrategy(BaseStrategy):
 
         self._scan_stats["signals"] += 1
 
+        # Apply expiry-day confidence penalty (-10%) — market volatile on that day
+        final_confidence = round(max(0.0, weighted_score - expiry_day_penalty), 4)
+
         return TradingSignal(
             symbol=symbol,
             company_name=company_info.get("name", symbol),
             strategy_name=self.name,
             signal_type=trade_signal,
-            confidence=round(weighted_score, 4),
+            confidence=final_confidence,
             entry_price=entry_price,
             target_price=target,
             stop_loss=stop_loss,
@@ -297,7 +295,7 @@ class OptionsPCRStrategy(BaseStrategy):
                 "atm_pe_ltp": round(atm_pe_ltp, 2),
                 "atm_ce_iv": round(atm_ce_iv, 1),
                 "atm_pe_iv": round(atm_pe_iv, 1),
-                "is_expiry_day": False,   # already skipped above if True
+                "is_expiry_day": is_expiry_day,
                 # Levels for chart overlay
                 "oi_resistance": resistance,
                 "oi_support": support,

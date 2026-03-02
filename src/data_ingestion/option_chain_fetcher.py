@@ -69,6 +69,16 @@ except ImportError:
     _CURL_CFFI_OK = False
     _curl_requests = None  # type: ignore[assignment]
 
+# ── SmartAPI (Angel One broker) availability check ───────────────────────────
+try:
+    from SmartApi import SmartConnect as _SmartConnect  # type: ignore[import]
+    import pyotp as _pyotp  # type: ignore[import]
+    _SMARTAPI_OK = True
+except ImportError:
+    _SMARTAPI_OK = False
+    _SmartConnect = None  # type: ignore[assignment]
+    _pyotp = None         # type: ignore[assignment]
+
 logger = get_logger(__name__)
 
 # ── NSE API endpoints ────────────────────────────────────────────────────────
@@ -122,6 +132,47 @@ _WEEKLY_EXPIRY_INDICES = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSE
 
 # Maximum consecutive auth failures before full session recreation
 _MAX_AUTH_FAILURES = 3
+
+# ── SmartAPI scrip master cache (module-level, refreshed every 6 h) ──────────
+_SCRIP_MASTER_CACHE: Optional[List[Dict]] = None
+_SCRIP_MASTER_CACHE_AT: Optional[datetime] = None
+_SCRIP_MASTER_TTL_SECONDS = 21600  # 6 hours
+
+# SmartAPI index LTP tokens: symbol -> (exchange, tradingSymbol, token)
+_SMARTAPI_INDEX_TOKENS: Dict[str, tuple] = {
+    "NIFTY":       ("NSE", "Nifty 50",          "99926000"),
+    "BANKNIFTY":   ("NSE", "Nifty Bank",         "99926009"),
+    "FINNIFTY":    ("NSE", "Nifty Fin Service",  "99926037"),
+    "MIDCPNIFTY":  ("NSE", "NIFTY MID SELECT",   "99926074"),
+    "SENSEX":      ("BSE", "SENSEX",             "1"),
+}
+
+
+def _get_scrip_master() -> List[Dict]:
+    """Download and in-memory cache the SmartAPI instrument master (JSON)."""
+    global _SCRIP_MASTER_CACHE, _SCRIP_MASTER_CACHE_AT
+    import requests as _req
+
+    if (
+        _SCRIP_MASTER_CACHE is not None
+        and _SCRIP_MASTER_CACHE_AT is not None
+        and (datetime.now() - _SCRIP_MASTER_CACHE_AT).total_seconds()
+            < _SCRIP_MASTER_TTL_SECONDS
+    ):
+        return _SCRIP_MASTER_CACHE
+
+    url = (
+        "https://margincalculator.angelbroking.com"
+        "/OpenAPI_File/files/OpenAPIScripMaster.json"
+    )
+    resp = _req.get(url, timeout=30)
+    resp.raise_for_status()
+    _SCRIP_MASTER_CACHE = resp.json()
+    _SCRIP_MASTER_CACHE_AT = datetime.now()
+    logger.info(
+        f"Downloaded SmartAPI scrip master ({len(_SCRIP_MASTER_CACHE)} instruments)"
+    )
+    return _SCRIP_MASTER_CACHE
 
 
 def _build_headers(user_agent: str, referer: str = NSE_BASE_URL) -> Dict[str, str]:
@@ -218,6 +269,10 @@ class OptionChainFetcher:
         self._pw_context = None
         self._pw_user_data_dir = tempfile.mkdtemp(prefix="nse-pw-")
         self._cache_dir = tempfile.gettempdir()
+        # SmartAPI (Angel One) session — reused across fetches to avoid TOTP
+        # re-generation on every call (TOTP is valid for 30 s, token for 24 h)
+        self._smartapi_obj = None
+        self._smartapi_token_expiry: Optional[datetime] = None
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -394,6 +449,209 @@ class OptionChainFetcher:
         except Exception as exc:
             logger.warning(f"nsepython fetch failed for {symbol}: {exc}")
         return None
+
+    # ── SmartAPI (Angel One broker) fetch ─────────────────────────────────────
+
+    async def _fetch_via_smartapi(self, symbol: str) -> Optional[Dict]:
+        """
+        Fetch option chain via SmartAPI (Angel One broker API).
+
+        Uses getMarketData with FULL mode for all NIFTY/BANKNIFTY option tokens
+        of the nearest expiry.  Falls back gracefully if SmartAPI creds are
+        missing or the account does not have NFO market data.
+
+        Credentials read from environment:
+          SMARTAPI_API_KEY, SMARTAPI_CLIENT_CODE, SMARTAPI_PIN,
+          SMARTAPI_TOTP_SECRET
+        """
+        if not _SMARTAPI_OK or _SmartConnect is None or _pyotp is None:
+            return None
+
+        api_key     = os.environ.get("SMARTAPI_API_KEY",      "").strip()
+        client_code = os.environ.get("SMARTAPI_CLIENT_CODE",  "").strip()
+        pin         = os.environ.get("SMARTAPI_PIN",          "").strip()
+        totp_secret = os.environ.get("SMARTAPI_TOTP_SECRET",  "").strip()
+
+        if not all([api_key, client_code, pin, totp_secret]):
+            return None
+
+        # Keep a reference so the inner closure can mutate it
+        self_ref = self
+
+        def _sync_fetch() -> Optional[Dict]:
+            import time as _time
+            import requests as _req
+
+            # ── Authenticate ──────────────────────────────────────────────────
+            now_dt = datetime.now()
+            if (
+                self_ref._smartapi_obj is None
+                or self_ref._smartapi_token_expiry is None
+                or now_dt >= self_ref._smartapi_token_expiry
+            ):
+                smart = _SmartConnect(api_key=api_key)
+                totp  = _pyotp.TOTP(totp_secret).now()
+                sess  = smart.generateSession(client_code, pin, totp)
+                if not sess.get("status"):
+                    raise RuntimeError(
+                        f"SmartAPI login failed: {sess.get('message')}"
+                    )
+                self_ref._smartapi_obj = smart
+                # Token is valid for ~24 h; refresh 30 min before expiry
+                self_ref._smartapi_token_expiry = now_dt.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).replace(hour=23, minute=30)
+            else:
+                smart = self_ref._smartapi_obj
+
+            sym_upper = symbol.upper()
+
+            # ── Download instrument master (cached) ────────────────────────────
+            scrip_master = _get_scrip_master()
+
+            # ── Filter symbol options ──────────────────────────────────────────
+            opts = [
+                x for x in scrip_master
+                if x.get("name", "") == sym_upper
+                and x.get("instrumenttype", "") == "OPTIDX"
+            ]
+            if not opts:
+                raise RuntimeError(
+                    f"No {sym_upper} OPTIDX instruments in scrip master"
+                )
+
+            # ── Select nearest non-expired expiry ──────────────────────────────
+            from datetime import date as _date_cls
+            today = _date_cls.today()
+
+            expiry_set = sorted(set(x.get("expiry", "") for x in opts))
+            selected_expiry = None
+            for exp in expiry_set:
+                try:
+                    exp_date = datetime.strptime(exp, "%d%b%Y").date()
+                    if exp_date >= today:
+                        selected_expiry = exp
+                        break
+                except ValueError:
+                    continue
+
+            if not selected_expiry:
+                raise RuntimeError(
+                    f"No valid upcoming expiry found for {sym_upper}"
+                )
+
+            # ── Get spot price ─────────────────────────────────────────────────
+            spot = 0.0
+            idx_tok = _SMARTAPI_INDEX_TOKENS.get(sym_upper)
+            if idx_tok:
+                exch, name_str, tok = idx_tok
+                ltp_resp = smart.ltpData(exch, name_str, tok)
+                if ltp_resp.get("status"):
+                    spot = float(ltp_resp.get("data", {}).get("ltp", 0))
+
+            # ── Fetch all option tokens in batches ─────────────────────────────
+            expiry_opts = [
+                x for x in opts if x.get("expiry", "") == selected_expiry
+            ]
+            tokens = [x["token"] for x in expiry_opts]
+            token_meta = {x["token"]: x for x in expiry_opts}
+
+            # Detect exchange segment from instruments (NFO for NIFTY/BANKNIFTY,
+            # BFO for SENSEX which trades on BSE F&O)
+            exch_segs = set(x.get("exch_seg", "NFO") for x in expiry_opts)
+            market_exch = exch_segs.pop() if exch_segs else "NFO"
+
+            all_fetched: List[Dict] = []
+            batch_size = 50
+            for i in range(0, len(tokens), batch_size):
+                batch = tokens[i: i + batch_size]
+                if i > 0:
+                    _time.sleep(0.3)
+                mresp = smart.getMarketData("FULL", {market_exch: batch})
+                if mresp.get("status"):
+                    all_fetched.extend(
+                        mresp.get("data", {}).get("fetched", [])
+                    )
+
+            if not all_fetched:
+                raise RuntimeError(
+                    f"SmartAPI getMarketData returned no data for {sym_upper}"
+                )
+
+            # ── Build NSE-like records structure ───────────────────────────────
+            strike_map: Dict[float, Dict] = {}
+            for item in all_fetched:
+                tok      = item.get("symbolToken", "")
+                meta     = token_meta.get(tok, {})
+                strike   = float(meta.get("strike", 0)) / 100.0
+                sym_str  = item.get("tradingSymbol", "")
+                opt_type = "CE" if sym_str.endswith("CE") else "PE"
+
+                depth    = item.get("depth", {})
+                best_bid = (
+                    depth.get("buy",  [{}])[0].get("price", 0)
+                    if depth.get("buy")  else 0
+                )
+                best_ask = (
+                    depth.get("sell", [{}])[0].get("price", 0)
+                    if depth.get("sell") else 0
+                )
+
+                if strike not in strike_map:
+                    strike_map[strike] = {}
+                strike_map[strike][opt_type] = {
+                    "openInterest":         item.get("opnInterest",  0),
+                    "changeinOpenInterest": 0,   # not in this endpoint
+                    "impliedVolatility":    0,   # not in this endpoint
+                    "lastPrice":            item.get("ltp",          0),
+                    "totalTradedVolume":    item.get("tradeVolume",   0),
+                    "bidprice":             best_bid,
+                    "askPrice":             best_ask,
+                }
+
+            records_data = [
+                {
+                    "strikePrice": strike,
+                    "CE": strike_map[strike].get("CE", {}),
+                    "PE": strike_map[strike].get("PE", {}),
+                }
+                for strike in sorted(strike_map)
+            ]
+
+            # Convert expiry dates to NSE format (DDMMMYYYY -> DD-Mon-YYYY)
+            expiry_dates_nse = []
+            for exp in expiry_set:
+                try:
+                    expiry_dates_nse.append(
+                        datetime.strptime(exp, "%d%b%Y").strftime("%d-%b-%Y")
+                    )
+                except ValueError:
+                    expiry_dates_nse.append(exp)
+
+            return {
+                "records": {
+                    "data":            records_data,
+                    "expiryDates":     expiry_dates_nse,
+                    "underlyingValue": spot,
+                },
+                "filtered": {
+                    "data": records_data,
+                },
+            }
+
+        try:
+            logger.info(
+                f"Fetching {symbol} option chain via SmartAPI (Angel One) …"
+            )
+            result = await asyncio.to_thread(_sync_fetch)
+            if result and result.get("records", {}).get("data"):
+                n = len(result["records"]["data"])
+                logger.info(f"SmartAPI fetch OK for {symbol} ({n} strikes)")
+                return result
+            return None
+        except Exception as exc:
+            logger.warning(f"SmartAPI fetch failed for {symbol}: {exc}")
+            return None
 
     def _cache_file_path(self, symbol: str) -> str:
         """Return local cache file path for parsed option-chain payload."""
@@ -794,6 +1052,14 @@ class OptionChainFetcher:
             parsed = self._parse_option_chain(raw, symbol)
             self._save_parsed_cache(symbol, parsed)
             return parsed
+
+        # ── 1b. SmartAPI (Angel One broker) — live data, bypasses NSE entirely ─
+        if _SMARTAPI_OK:
+            raw = await self._fetch_via_smartapi(symbol)
+            if raw:
+                parsed = self._parse_option_chain(raw, symbol)
+                self._save_parsed_cache(symbol, parsed)
+                return parsed
 
         # ── 2. Playwright real browser (executes JS — fully bypasses Akamai) ───
         if _PLAYWRIGHT_OK:
