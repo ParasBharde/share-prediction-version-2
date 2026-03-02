@@ -180,12 +180,24 @@ def parse_args():
             "detailed output. Implies --force."
         ),
     )
+    parser.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Send signals and scan summary to Telegram",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log signals but do NOT send Telegram alerts",
+    )
     return parser.parse_args()
 
 
 async def run_daily_scan(
     force_run: bool = False,
     strategy_filter: Optional[List[str]] = None,
+    send_telegram: bool = False,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute the full daily stock scanning pipeline.
@@ -281,13 +293,14 @@ async def run_daily_scan(
         redis_handler = RedisHandler()
         deduplicator = AlertDeduplicator(redis_handler)
 
-        # Initialize Telegram bot from environment
+        # Initialize Telegram bot — requires --telegram flag
         bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         telegram = None
-        if TelegramBot is not None and bot_token and chat_id:
+        if send_telegram and not dry_run and TelegramBot is not None and bot_token and chat_id:
             telegram = TelegramBot(bot_token, chat_id)
-        else:
+            logger.info("Telegram delivery enabled")
+        elif send_telegram and not dry_run:
             if TelegramBot is None:
                 logger.warning(
                     "python-telegram-bot not installed, "
@@ -298,6 +311,8 @@ async def run_daily_scan(
                     "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set, "
                     "alerts will be logged only"
                 )
+        elif not send_telegram:
+            logger.info("Console-only mode — use --telegram to send alerts")
 
         # Initialize Paper Trading Engine
         paper_engine = None
@@ -326,6 +341,22 @@ async def run_daily_scan(
             f"Market regime: {market_ctx['regime']} | "
             f"{market_ctx['reason']}"
         )
+
+        # Print market context prominently to console so it's visible before the long scan
+        _regime_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "BEARISH": "🔴"}.get(
+            market_ctx["regime"], "🟡"
+        )
+        _vix_emoji = "🔴" if market_ctx["vix"] > 20 else ("🟠" if market_ctx["vix"] > 16 else "🟢")
+        print(f"\n{'─'*60}")
+        print(
+            f"  MARKET: {_regime_emoji} {market_ctx['regime']}"
+            f"  |  NIFTY: {market_ctx['nifty_close']:,.0f}"
+            f" ({market_ctx['nifty_vs_ema']:+.1f}% vs EMA20)"
+            f"  |  VIX: {_vix_emoji} {market_ctx['vix']:.1f} ({market_ctx['vix_regime']})"
+        )
+        if not market_ctx["allow_buys"]:
+            print(f"  ⚠️  BUY signals suppressed — {market_ctx['reason']}")
+        print(f"{'─'*60}\n")
 
         if not market_ctx["allow_buys"] and telegram:
             regime_msg = (
@@ -539,7 +570,10 @@ async def run_daily_scan(
                         for ind_sig in agg_sig.individual_signals:
                             ind_sig.setdefault("metadata", {})["sector"] = sect
 
-            ranked = rank_signals(aggregated)
+            ranked = rank_signals(
+                aggregated,
+                nifty_return_20d=market_ctx.get("nifty_return_20d", 0.0),
+            )
             filtered = filter_signals(ranked)
 
             # Apply minimum confidence threshold — only alert on high-quality setups
@@ -1269,5 +1303,7 @@ if __name__ == "__main__":
         run_daily_scan(
             force_run=args.force,
             strategy_filter=strategy_filter,
+            send_telegram=args.telegram,
+            dry_run=args.dry_run,
         )
     )

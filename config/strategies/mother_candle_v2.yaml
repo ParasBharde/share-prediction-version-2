@@ -34,15 +34,15 @@ strategy:
     # STRICT FILTERS - WILL REJECT FALSE SIGNALS
     # ═══════════════════════════════════════════════════════════════
 
-    # 1. TREND FILTER - STRICT
+    # 1. TREND FILTER
     require_uptrend: true
     trend_ema_period: 50
-    price_above_ema_pct: 0.0          # ✓ STRICT: Must be 3% above EMA
-    min_ema_slope_pct: -0.5           # ✓ NEW: EMA must not be falling
-    
-    # 2. MINIMUM BREAKOUT STRENGTH - STRICT  
-    min_breakout_pct: 0.3             # ✓ STRICT: Must be 1% above Mother
-    max_entry_buffer_pct: 2.0
+    price_above_ema_pct: 0.0          # price must be >= EMA50 (0 = just at EMA; set 3.0 for strict 3% buffer)
+    min_ema_slope_pct: -0.5           # EMA50 must not fall more than 0.5% over 5 bars (rejects downtrends)
+
+    # 2. MINIMUM BREAKOUT STRENGTH
+    min_breakout_pct: 0.3             # Close must be > 0.3% above Mother High (avoids micro-breakouts)
+    max_entry_buffer_pct: 2.0         # Close must be < 2% above Mother High (avoids chasing)
     
     # 3. PRICE STRUCTURE FILTER - STRICT
     mother_position_filter: true

@@ -143,6 +143,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print per-strategy rejection stats after the scan",
     )
+    parser.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Send signals and scan summary to Telegram",
+    )
     return parser.parse_args()
 
 
@@ -151,6 +156,7 @@ def parse_args() -> argparse.Namespace:
 async def run_btst_scan(
     force_run: bool = False,
     dry_run: bool = False,
+    send_telegram: bool = False,
     strategy_names: Optional[List[str]] = None,
     chart_dir: str = "/tmp",
     verbose_stats: bool = False,
@@ -232,9 +238,9 @@ async def run_btst_scan(
         # Ensure chart output directory exists
         Path(chart_dir).mkdir(parents=True, exist_ok=True)
 
-        # Telegram (optional)
+        # Telegram (optional) — requires --telegram flag
         telegram = None
-        if not dry_run and TelegramBot is not None:
+        if send_telegram and not dry_run and TelegramBot is not None:
             bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
             if bot_token and chat_id:
@@ -247,6 +253,26 @@ async def run_btst_scan(
                 )
         elif dry_run:
             logger.info("[BTST] Dry-run mode — Telegram delivery disabled")
+        elif not send_telegram:
+            logger.info("[BTST] Console-only mode — use --telegram to send alerts")
+
+        # ── Market context (India VIX + NIFTY regime) ─────────────────────
+        from src.utils.market_context import get_market_context
+        market_ctx = await get_market_context(fallback_manager)
+        _regime_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "BEARISH": "🔴"}.get(
+            market_ctx["regime"], "🟡"
+        )
+        _vix_emoji = "🔴" if market_ctx["vix"] > 20 else ("🟠" if market_ctx["vix"] > 16 else "🟢")
+        print(f"\n{'─'*60}")
+        print(
+            f"  MARKET: {_regime_emoji} {market_ctx['regime']}"
+            f"  |  NIFTY: {market_ctx['nifty_close']:,.0f}"
+            f" ({market_ctx['nifty_vs_ema']:+.1f}% vs EMA20)"
+            f"  |  VIX: {_vix_emoji} {market_ctx['vix']:.1f} ({market_ctx['vix_regime']})"
+        )
+        if not market_ctx["allow_buys"]:
+            print(f"  ⚠️  BEARISH REGIME — BUY signals will be suppressed today")
+        print(f"{'─'*60}\n")
 
         # ── Stock universe ─────────────────────────────────────────────────
         from scripts.daily_scan import _compute_atr14, _get_stock_universe
@@ -406,6 +432,44 @@ async def run_btst_scan(
                 f"Scanned {results['stocks_scanned']} stocks "
                 f"in {elapsed:.1f}s"
             )
+
+            # Print console summary
+            print(f"\n{'='*60}")
+            print(f"  BTST SCAN RESULTS — {scan_date.strftime('%Y-%m-%d %H:%M IST')}")
+            print(f"  Stocks scanned : {results['stocks_scanned']}")
+            print(f"  Signals found  : 0 — no qualifying setups today")
+            print(f"{'='*60}\n")
+
+            # Build rejection stats for the notification
+            rejection_parts = []
+            for s in strategies:
+                if hasattr(s, "get_scan_stats"):
+                    st = s.get_scan_stats()
+                    for k in ["trend_rejected", "volume_rejected", "no_pattern",
+                               "overbought_rejected", "low_confidence"]:
+                        v = st.get(k, 0)
+                        if v > 0:
+                            rejection_parts.append(
+                                f"{s.name}: {k.replace('_', ' ')} ({v})"
+                            )
+            rej_str = "\n• ".join(rejection_parts[:5]) if rejection_parts else "No pattern matches"
+
+            no_signal_summary = (
+                f"📊 BTST Scan — {scan_date.strftime('%d %b %Y')}\n\n"
+                f"Stocks scanned : {results['stocks_scanned']}\n"
+                f"Signals        : 0 (no qualifying setups)\n"
+                f"Market         : {market_ctx['regime']}  |  VIX {market_ctx['vix']:.1f} ({market_ctx['vix_regime']})\n"
+                f"Duration       : {elapsed:.0f}s\n\n"
+                f"Top rejections:\n• {rej_str}"
+            )
+            if telegram and not dry_run:
+                try:
+                    await telegram.send_alert(no_signal_summary, "LOW")
+                except Exception:
+                    pass
+            else:
+                print(no_signal_summary)
+
             return {
                 **results,
                 "status": "ok",
@@ -413,16 +477,66 @@ async def run_btst_scan(
             }
 
         aggregated = aggregate_signals(all_signals)
-        ranked = rank_signals(aggregated)
+        ranked = rank_signals(
+            aggregated,
+            nifty_return_20d=market_ctx.get("nifty_return_20d", 0.0),
+        )
         filtered = filter_signals(ranked)
+
+        # Apply market context filter — suppress BUY signals in BEARISH regime
+        # Signals are still printed to console for awareness, just not sent to Telegram
+        bearish_suppressed = []
+        if not market_ctx.get("allow_buys", True):
+            before_count = len(filtered)
+            bearish_suppressed = [
+                s for s in filtered
+                if s.signal_type.value in ("BUY", "STRONG_BUY")
+            ]
+            filtered = [
+                s for s in filtered
+                if s.signal_type.value not in ("BUY", "STRONG_BUY")
+            ]
+            suppressed = before_count - len(filtered)
+            if suppressed:
+                logger.warning(
+                    f"[BTST] Market regime {market_ctx['regime']}: "
+                    f"suppressed {suppressed} BUY signals from Telegram"
+                )
         results["signals_generated"] = len(filtered)
 
         # ── Pretty-print summary ───────────────────────────────────────────
         print(f"\n{'='*60}")
         print(f"  BTST SCAN RESULTS — {scan_date.strftime('%Y-%m-%d %H:%M IST')}")
         print(f"  Stocks scanned : {results['stocks_scanned']}")
-        print(f"  Signals found  : {len(filtered)}")
+        print(f"  Signals found  : {len(filtered) + len(bearish_suppressed)}"
+              + (f"  ({len(bearish_suppressed)} suppressed — BEARISH regime)" if bearish_suppressed else ""))
         print(f"{'='*60}")
+
+        # Show suppressed signals in console so user can decide manually
+        if bearish_suppressed:
+            print(f"\n  ⚠️  BEARISH REGIME — signals below are FOR REFERENCE ONLY")
+            print(f"  Market is below EMA20. Trade at your own risk.\n")
+            for i, sig in enumerate(bearish_suppressed, 1):
+                strat = (
+                    sig.contributing_strategies[0]
+                    if sig.contributing_strategies
+                    else "Unknown"
+                )
+                icon = _SIGNAL_ICONS.get(strat, "📈")
+                rr = None
+                for ind in sig.individual_signals:
+                    rr = ind.get("metadata", {}).get("rr_ratio") or rr
+                rr_str = f"R:R 1:{rr}" if rr else ""
+                print(
+                    f"  {i:>2}. {icon} {sig.symbol:<12} "
+                    f"[{strat}]  "
+                    f"Entry: Rs.{sig.entry_price:>8.2f}  "
+                    f"Target: Rs.{sig.target_price:>8.2f}  "
+                    f"SL: Rs.{sig.stop_loss:>8.2f}  "
+                    f"Conf: {sig.weighted_confidence:.0%}  "
+                    f"{rr_str}  ⚠️ NOT SENT"
+                )
+            print()
 
         for i, sig in enumerate(filtered, 1):
             strat = (
@@ -556,6 +670,25 @@ async def run_btst_scan(
         f"{results['signals_generated']} signals, "
         f"{results['alerts_sent']} alerts sent"
     )
+
+    # Send scan completion summary to Telegram (always — even when signals exist,
+    # so user knows the scan finished and how many alerts were sent)
+    try:
+        completion_msg = (
+            f"✅ BTST Scan Done — {scan_date.strftime('%d %b %Y')}\n\n"
+            f"Stocks scanned : {results['stocks_scanned']}\n"
+            f"Signals found  : {results['signals_generated']}\n"
+            f"Alerts sent    : {results['alerts_sent']}\n"
+            f"Market         : {market_ctx['regime']}  |  VIX {market_ctx['vix']:.1f}\n"
+            f"Duration       : {elapsed:.0f}s"
+        )
+        if telegram and not dry_run and results.get("alerts_sent", 0) > 0:
+            # Only send completion summary if alerts were actually sent
+            # (avoids double-messaging when 0 signals — that case already handled above)
+            await telegram.send_alert(completion_msg, "LOW")
+    except Exception:
+        pass
+
     return results
 
 
@@ -568,6 +701,7 @@ if __name__ == "__main__":
         run_btst_scan(
             force_run=args.force,
             dry_run=args.dry_run,
+            send_telegram=args.telegram,
             strategy_names=args.strategies,
             chart_dir=args.chart_dir,
             verbose_stats=args.verbose_stats,

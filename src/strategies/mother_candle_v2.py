@@ -57,11 +57,14 @@ class MotherCandleV2Strategy(BaseStrategy):
         # ═══════════════════════════════════════════════════════════
         # NEW FILTERS TO PREVENT FALSE SIGNALS
         # ═══════════════════════════════════════════════════════════
-        
+
         # 1. TREND FILTER
         self.require_uptrend = params.get("require_uptrend", True)
         self.trend_ema_period = params.get("trend_ema_period", 50)
-        self.price_above_ema_pct = params.get("price_above_ema_pct", 0)  # Price must be >= EMA
+        self.price_above_ema_pct = params.get("price_above_ema_pct", 0)  # Price must be >= EMA (0 = just at EMA)
+        # EMA slope: reject if EMA is falling faster than this % per bar
+        # e.g. -0.5 → EMA must not decline more than 0.5% in the last 5 bars
+        self.min_ema_slope_pct = params.get("min_ema_slope_pct", None)  # None = disabled
         
         # 2. MINIMUM BREAKOUT STRENGTH
         self.min_breakout_pct = params.get("min_breakout_pct", 0.3)  # Breakout must be > 0.3% above Mother High
@@ -100,8 +103,9 @@ class MotherCandleV2Strategy(BaseStrategy):
             "sl_too_wide": 0,
             "rr_too_low": 0,
             "dma_wall_blocked": 0,
-            "trend_rejected": 0,
-            "weak_breakout": 0,
+            "trend_rejected": 0,       # price below EMA or EMA slope too steep
+            "weak_breakout": 0,        # breakout < min_breakout_pct
+            "overextended_breakout": 0, # breakout > max_entry_buffer_pct (chasing)
             "bad_position": 0,
             "failed_breakout_history": 0,
             "low_volatility": 0,
@@ -132,15 +136,15 @@ class MotherCandleV2Strategy(BaseStrategy):
             return None
 
         # ════════════════════════════════════════════════════════════
-        # NEW FILTER 1: TREND CHECK (price > EMA)
+        # NEW FILTER 1: TREND CHECK (price > EMA + EMA slope)
         # ════════════════════════════════════════════════════════════
         if self.require_uptrend:
             ema = df["close"].ewm(span=self.trend_ema_period, adjust=False).mean()
             last_close = float(df["close"].iloc[-1])
             last_ema = float(ema.iloc[-1])
-            
+
             price_vs_ema_pct = ((last_close - last_ema) / last_ema) * 100
-            
+
             if price_vs_ema_pct < self.price_above_ema_pct:
                 self._scan_stats["trend_rejected"] += 1
                 logger.debug(
@@ -149,13 +153,35 @@ class MotherCandleV2Strategy(BaseStrategy):
                 )
                 return None
 
+            # EMA slope filter: check that EMA50 is not declining sharply
+            # slope = % change of EMA over last 5 bars
+            if self.min_ema_slope_pct is not None and len(ema) >= 6:
+                ema_5_bars_ago = float(ema.iloc[-6])
+                if ema_5_bars_ago > 0:
+                    ema_slope_pct = ((last_ema - ema_5_bars_ago) / ema_5_bars_ago) * 100
+                    if ema_slope_pct < self.min_ema_slope_pct:
+                        self._scan_stats["trend_rejected"] += 1
+                        logger.debug(
+                            f"{symbol}: EMA slope rejected — "
+                            f"EMA{self.trend_ema_period} fell {ema_slope_pct:.2f}% "
+                            f"in 5 bars (min: {self.min_ema_slope_pct}%)"
+                        )
+                        return None
+
         # ════════════════════════════════════════════════════════════
         # NEW FILTER 5: ATR VALIDATION (sufficient volatility)
         # ════════════════════════════════════════════════════════════
+        import math as _math
         atr = self._calculate_atr(df, self.atr_period)
-        last_close = float(df["close"].iloc[-1])
-        atr_pct = (atr / last_close) * 100 if last_close > 0 else 0
-        
+        # last_close is already assigned above (in trend filter or here)
+        last_close = float(df["close"].iloc[-1])  # always refresh (may not have run trend block)
+        # Guard against NaN: float('nan') < threshold is always False in Python,
+        # which would incorrectly pass the filter. Treat NaN as zero (no data).
+        if _math.isnan(atr) or atr <= 0:
+            atr_pct = 0.0
+        else:
+            atr_pct = (atr / last_close) * 100 if last_close > 0 else 0.0
+
         if atr_pct < self.min_atr_pct:
             self._scan_stats["low_volatility"] += 1
             logger.debug(
@@ -209,7 +235,11 @@ class MotherCandleV2Strategy(BaseStrategy):
         
         # Also check max buffer (don't chase overextended breakouts)
         if breakout_strength_pct > self.max_entry_buffer_pct:
-            self._scan_stats["weak_breakout"] += 1
+            self._scan_stats["overextended_breakout"] += 1
+            logger.debug(
+                f"{symbol}: Overextended — breakout {breakout_strength_pct:.2f}% "
+                f"above mother high (max: {self.max_entry_buffer_pct}%)"
+            )
             return None
 
         # ════════════════════════════════════════════════════════════

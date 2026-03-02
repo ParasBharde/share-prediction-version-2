@@ -444,7 +444,8 @@ def _trade_quality_check(signal, option_chain: dict,
 
 
 def format_expert_telegram(signal, quality: dict, option_chain: dict,
-                            strategies_agreed: int = 1) -> str:
+                            strategies_agreed: int = 1,
+                            market_ctx: Optional[dict] = None) -> str:
     """
     Expert-grade Telegram alert with complete trade instructions.
     Inspired by: John Carter 'Mastering the Trade',
@@ -471,6 +472,9 @@ def format_expert_telegram(signal, quality: dict, option_chain: dict,
     resistance = option_chain.get("resistance", 0)
     support    = option_chain.get("support",    0)
     is_expiry  = option_chain.get("is_expiry_day", False)
+    mp         = option_chain.get("_max_pain", {})
+    vix        = (market_ctx or {}).get("vix", 0.0)
+    vix_info   = _classify_vix_level(vix)
 
     # Strategy consensus badge
     agree_badge = ""
@@ -556,7 +560,11 @@ def format_expert_telegram(signal, quality: dict, option_chain: dict,
         f"  Support    : {support}  (PUT writers — floor)\n"
         f"  PCR        : {pcr:.2f}  "
         f"({'bullish — more PUT writers' if pcr > 1.0 else 'bearish — more CALL writers'})\n"
-        f"  Expiry day : {'YES ⚠️' if is_expiry else 'No'}\n"
+        + (f"  Max Pain   : {mp['max_pain_strike']:,}  |  {mp['pressure']}\n"
+           if mp.get("max_pain_strike") else "")
+        + (f"  India VIX  : {vix:.1f}  {vix_info['emoji']} {vix_info['label']}  — {vix_info['advice']}\n"
+           if vix > 0 else "")
+        + f"  Expiry day : {'YES ⚠️' if is_expiry else 'No'}\n"
         f"\n"
         f"📈 MULTI-TIMEFRAME ANALYSIS:\n"
         f"{mtf_block}\n"
@@ -623,6 +631,89 @@ def _compute_atr14(df: "pd.DataFrame") -> float:
         return float(atr.iloc[-1])
     except Exception:
         return 0.0
+
+
+def _compute_max_pain(option_chain: dict) -> dict:
+    """
+    Compute max pain strike from open interest data.
+
+    Max pain = the strike where the total value of all options expiring
+    worthless is maximised (i.e. where option buyers lose the most /
+    market makers win the most). Price historically gravitates toward
+    max pain in the final 1-2 days before expiry.
+
+    Algorithm:
+        For each candidate strike K:
+          call_pain = sum((K_i - K) * ce_oi)  for all K_i > K
+          put_pain  = sum((K - K_j) * pe_oi)  for all K_j < K
+          total_pain = call_pain + put_pain
+        max_pain_strike = K with the MINIMUM total_pain
+    """
+    strikes_data = option_chain.get("strikes", [])
+    if not strikes_data:
+        return {"max_pain_strike": 0, "distance_pts": 0, "pressure": "unknown"}
+
+    strikes = []
+    for s in strikes_data:
+        k = s.get("strike", 0)
+        ce_oi = float(s.get("ce_oi", 0) or 0)
+        pe_oi = float(s.get("pe_oi", 0) or 0)
+        if k > 0:
+            strikes.append((float(k), ce_oi, pe_oi))
+
+    if not strikes:
+        return {"max_pain_strike": 0, "distance_pts": 0, "pressure": "unknown"}
+
+    all_k = [s[0] for s in strikes]
+    min_pain = float("inf")
+    max_pain_strike = 0.0
+
+    for k in all_k:
+        call_pain = sum((ki - k) * ce for ki, ce, _ in strikes if ki > k)
+        put_pain  = sum((k - kj) * pe for kj, _, pe in strikes if kj < k)
+        total = call_pain + put_pain
+        if total < min_pain:
+            min_pain = total
+            max_pain_strike = k
+
+    underlying = float(option_chain.get("underlying_price", 0) or 0)
+    diff = round(underlying - max_pain_strike, 0) if underlying and max_pain_strike else 0
+
+    if max_pain_strike == 0:
+        pressure = "unknown"
+    elif abs(diff) < 50:
+        pressure = "NEUTRAL (near max pain)"
+    elif diff > 0:
+        pressure = f"DOWN pressure — {diff:.0f} pts above max pain"
+    else:
+        pressure = f"UP pressure — {abs(diff):.0f} pts below max pain"
+
+    return {
+        "max_pain_strike": int(max_pain_strike),
+        "distance_pts": int(diff),
+        "pressure": pressure,
+    }
+
+
+def _classify_vix_level(vix: float) -> dict:
+    """
+    Classify India VIX level for options buyers.
+
+    India VIX IS the market's implied volatility for NIFTY 50.
+    High VIX = inflated premiums = buying options is expensive.
+    """
+    if vix <= 0:
+        return {"label": "UNKNOWN", "emoji": "⚪", "advice": "VIX data unavailable"}
+    elif vix < 12:
+        return {"label": "VERY LOW",  "emoji": "🟢", "advice": "Options very cheap — good for buyers"}
+    elif vix < 16:
+        return {"label": "LOW",       "emoji": "🟢", "advice": "Options reasonably priced"}
+    elif vix < 20:
+        return {"label": "MODERATE",  "emoji": "🟡", "advice": "Options at normal premium"}
+    elif vix < 25:
+        return {"label": "ELEVATED",  "emoji": "🟠", "advice": "Premiums elevated — consider sizing down"}
+    else:
+        return {"label": "HIGH",      "emoji": "🔴", "advice": "Expensive options — reduce lots or avoid buying"}
 
 
 # ============================================================================
@@ -1338,6 +1429,7 @@ async def scan_options(
     dry_run: bool = False,
     chart_dir: str = "/tmp",
     oc_fetcher=None,          # Shared fetcher — pass from main() to reuse browser
+    market_ctx: Optional[dict] = None,  # Market context (VIX, regime) from main()
 ) -> List[TradingSignal]:
     """Scan indices for options trading signals with chart images."""
     all_signals = []
@@ -1378,6 +1470,16 @@ async def scan_options(
 
         if option_chain:
             print(format_option_chain_summary(option_chain))
+
+            # ── Max Pain ────────────────────────────────────────────────────
+            mp = _compute_max_pain(option_chain)
+            if mp["max_pain_strike"] > 0:
+                print(
+                    f"  Max Pain  : {mp['max_pain_strike']:,}"
+                    f"  |  {mp['pressure']}"
+                )
+                option_chain["_max_pain"] = mp   # pass through to Telegram formatter
+
             # DTE guard — skip if nearest expiry is >10 calendar days away
             # (far-out options have high premiums; not suitable for intraday)
             oc_expiry = option_chain.get("current_expiry", "")
@@ -1535,6 +1637,7 @@ async def scan_options(
             tg_message = format_expert_telegram(
                 best, quality, option_chain,
                 strategies_agreed=n_agree,
+                market_ctx=market_ctx,
             )
 
             # Always print the full Telegram template to console so user
@@ -1644,6 +1747,36 @@ async def main():
 
     print(f"\nStrategies: {', '.join(s.name for s in strategies)}")
 
+    # ── Market context (India VIX + NIFTY regime) ─────────────────────────
+    # Fetch once at startup. VIX and regime don't change minute-to-minute,
+    # so one call per session is sufficient.
+    from src.utils.market_context import get_market_context
+    try:
+        market_ctx = await get_market_context()
+    except Exception:
+        market_ctx = {"regime": "NEUTRAL", "vix": 0.0, "vix_regime": "UNKNOWN",
+                      "allow_buys": True, "nifty_close": 0.0, "nifty_vs_ema": 0.0,
+                      "reason": "Market context unavailable"}
+
+    _vix = market_ctx["vix"]
+    _vix_info = _classify_vix_level(_vix)
+    _regime = market_ctx["regime"]
+    _regime_emoji = {"BULLISH": "🟢", "NEUTRAL": "🟡", "BEARISH": "🔴"}.get(_regime, "🟡")
+
+    print(f"\n{'─'*55}")
+    print(
+        f"  MARKET: {_regime_emoji} {_regime}"
+        f"  |  NIFTY: {market_ctx['nifty_close']:,.0f}"
+        f" ({market_ctx['nifty_vs_ema']:+.1f}% vs EMA20)"
+    )
+    print(
+        f"  India VIX: {_vix_info['emoji']} {_vix:.1f} ({_vix_info['label']})"
+        f"  — {_vix_info['advice']}"
+    )
+    if not market_ctx.get("allow_buys"):
+        print(f"  ⚠️  BEARISH REGIME: Confidence reduced on BUY signals")
+    print(f"{'─'*55}\n")
+
     if args.repeat > 0:
         repeat_min = args.repeat
         print(f"\nAUTO-REPEAT: Scanning every {repeat_min} min  |  Press Ctrl+C to stop")
@@ -1692,6 +1825,7 @@ async def main():
                     dry_run=args.dry_run,
                     chart_dir=args.chart_dir,
                     oc_fetcher=shared_fetcher,
+                    market_ctx=market_ctx,
                 )
 
                 if signals:
@@ -1723,6 +1857,7 @@ async def main():
             send_telegram=args.telegram,
             dry_run=args.dry_run,
             chart_dir=args.chart_dir,
+            market_ctx=market_ctx,
         )
 
         print(f"\n{'='*55}")

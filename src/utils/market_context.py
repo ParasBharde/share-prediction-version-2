@@ -60,6 +60,7 @@ async def get_market_context(fallback_manager=None) -> Dict[str, Any]:
     nifty_close: float = 0.0
     nifty_ema20: float = 0.0
     nifty_vs_ema: float = 0.0
+    nifty_return_20d: float = 0.0   # % return over last 20 trading days (for RS boost)
     vix: float = 0.0
 
     # ── Fetch Nifty 50 data ───────────────────────────────────────────────────
@@ -115,6 +116,11 @@ async def get_market_context(fallback_manager=None) -> Dict[str, Any]:
         nifty_ema20 = float(ema20.iloc[-1])
         if nifty_ema20 > 0:
             nifty_vs_ema = (nifty_close - nifty_ema20) / nifty_ema20 * 100
+        # 20-day return — used by ranking_engine RS boost
+        if len(nifty_df) >= 21:
+            close_20d_ago = float(nifty_df["close"].iloc[-21])
+            if close_20d_ago > 0:
+                nifty_return_20d = (nifty_close - close_20d_ago) / close_20d_ago * 100
     else:
         logger.warning(
             "Could not fetch Nifty 50 data — defaulting to NEUTRAL regime"
@@ -180,15 +186,16 @@ async def get_market_context(fallback_manager=None) -> Dict[str, Any]:
         )
 
     context = {
-        "regime":       regime,
-        "nifty_close":  round(nifty_close, 2),
-        "nifty_ema20":  round(nifty_ema20, 2),
-        "nifty_vs_ema": round(nifty_vs_ema, 2),
-        "vix":          round(vix, 2),
-        "vix_regime":   vix_regime,
-        "allow_buys":   allow_buys,
-        "allow_sells":  allow_sells,
-        "reason":       reason,
+        "regime":           regime,
+        "nifty_close":      round(nifty_close, 2),
+        "nifty_ema20":      round(nifty_ema20, 2),
+        "nifty_vs_ema":     round(nifty_vs_ema, 2),
+        "nifty_return_20d": round(nifty_return_20d, 2),
+        "vix":              round(vix, 2),
+        "vix_regime":       vix_regime,
+        "allow_buys":       allow_buys,
+        "allow_sells":      allow_sells,
+        "reason":           reason,
     }
 
     logger.info(
